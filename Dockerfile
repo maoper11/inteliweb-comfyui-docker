@@ -8,9 +8,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ---- Version pins (set in docker-bake.hcl) ----
 ARG COMFYUI_VERSION
 ARG MANAGER_SHA
-ARG KJNODES_SHA
-ARG CIVICOMFY_SHA
-ARG RUNPODDIRECT_SHA
 ARG TORCH_VERSION
 ARG TORCHVISION_VERSION
 ARG TORCHAUDIO_VERSION
@@ -49,38 +46,33 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
 ENV PATH=/usr/local/cuda/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
 
-# Download pinned source archives
+# Download pinned ComfyUI source archive
 WORKDIR /tmp/build
 RUN curl -fSL "https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/${COMFYUI_VERSION}.tar.gz" -o comfyui.tar.gz && \
-    mkdir -p ComfyUI && tar xzf comfyui.tar.gz --strip-components=1 -C ComfyUI && rm comfyui.tar.gz
+    mkdir -p ComfyUI && \
+    tar xzf comfyui.tar.gz --strip-components=1 -C ComfyUI && \
+    rm comfyui.tar.gz
 
+# Download only ComfyUI-Manager as pre-installed custom node
 WORKDIR /tmp/build/ComfyUI/custom_nodes
 RUN curl -fSL "https://github.com/ltdrdata/ComfyUI-Manager/archive/${MANAGER_SHA}.tar.gz" -o manager.tar.gz && \
-    mkdir -p ComfyUI-Manager && tar xzf manager.tar.gz --strip-components=1 -C ComfyUI-Manager && rm manager.tar.gz && \
-    curl -fSL "https://github.com/kijai/ComfyUI-KJNodes/archive/${KJNODES_SHA}.tar.gz" -o kjnodes.tar.gz && \
-    mkdir -p ComfyUI-KJNodes && tar xzf kjnodes.tar.gz --strip-components=1 -C ComfyUI-KJNodes && rm kjnodes.tar.gz && \
-    curl -fSL "https://github.com/MoonGoblinDev/Civicomfy/archive/${CIVICOMFY_SHA}.tar.gz" -o civicomfy.tar.gz && \
-    mkdir -p Civicomfy && tar xzf civicomfy.tar.gz --strip-components=1 -C Civicomfy && rm civicomfy.tar.gz && \
-    curl -fSL "https://github.com/MadiatorLabs/ComfyUI-RunpodDirect/archive/${RUNPODDIRECT_SHA}.tar.gz" -o runpoddirect.tar.gz && \
-    mkdir -p ComfyUI-RunpodDirect && tar xzf runpoddirect.tar.gz --strip-components=1 -C ComfyUI-RunpodDirect && rm runpoddirect.tar.gz
+    mkdir -p ComfyUI-Manager && \
+    tar xzf manager.tar.gz --strip-components=1 -C ComfyUI-Manager && \
+    rm manager.tar.gz
 
 # Init git repos with upstream remotes so ComfyUI-Manager can detect versions
 # and users can update via Manager at their own risk
 RUN cd /tmp/build/ComfyUI && \
-    git init && git add -A && git -c user.name=- -c user.email=- commit -q -m "ComfyUI ${COMFYUI_VERSION}" && git tag "${COMFYUI_VERSION}" && \
+    git init && \
+    git add -A && \
+    git -c user.name=- -c user.email=- commit -q -m "ComfyUI ${COMFYUI_VERSION}" && \
+    git tag "${COMFYUI_VERSION}" && \
     git remote add origin https://github.com/comfyanonymous/ComfyUI.git && \
     cd /tmp/build/ComfyUI/custom_nodes/ComfyUI-Manager && \
-    git init && git add -A && git -c user.name=- -c user.email=- commit -q -m "ComfyUI-Manager ${MANAGER_SHA}" && \
-    git remote add origin https://github.com/ltdrdata/ComfyUI-Manager.git && \
-    cd /tmp/build/ComfyUI/custom_nodes/ComfyUI-KJNodes && \
-    git init && git add -A && git -c user.name=- -c user.email=- commit -q -m "ComfyUI-KJNodes ${KJNODES_SHA}" && \
-    git remote add origin https://github.com/kijai/ComfyUI-KJNodes.git && \
-    cd /tmp/build/ComfyUI/custom_nodes/Civicomfy && \
-    git init && git add -A && git -c user.name=- -c user.email=- commit -q -m "Civicomfy ${CIVICOMFY_SHA}" && \
-    git remote add origin https://github.com/MoonGoblinDev/Civicomfy.git && \
-    cd /tmp/build/ComfyUI/custom_nodes/ComfyUI-RunpodDirect && \
-    git init && git add -A && git -c user.name=- -c user.email=- commit -q -m "ComfyUI-RunpodDirect ${RUNPODDIRECT_SHA}" && \
-    git remote add origin https://github.com/MadiatorLabs/ComfyUI-RunpodDirect.git
+    git init && \
+    git add -A && \
+    git -c user.name=- -c user.email=- commit -q -m "ComfyUI-Manager ${MANAGER_SHA}" && \
+    git remote add origin https://github.com/ltdrdata/ComfyUI-Manager.git
 
 # Generate lock file from all requirements (including torch pins), then install with hash verification
 WORKDIR /tmp/build
@@ -181,7 +173,8 @@ RUN mkdir -p /usr/local/etc/jupyter/jupyter_server_config.d && \
 # Copy baked ComfyUI + custom nodes from builder stage
 COPY --from=builder /opt/comfyui-baked /opt/comfyui-baked
 
-# Remove uv to force ComfyUI-Manager to use pip (uv doesn't respect --system-site-packages properly)
+# Remove uv to force ComfyUI-Manager to use pip
+# uv doesn't respect --system-site-packages properly in this setup
 RUN pip uninstall -y uv 2>/dev/null || true && \
     rm -f /usr/local/bin/uv /usr/local/bin/uvx
 

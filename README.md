@@ -1,24 +1,24 @@
 [![Watch the video](https://i3.ytimg.com/vi/JovhfHhxqdM/hqdefault.jpg)](https://www.youtube.com/watch?v=JovhfHhxqdM)
 
-Run the latest ComfyUI. All dependencies are pre-installed in the image. On first boot, ComfyUI is copied to your workspace — when you see `[ComfyUI-Manager] All startup tasks have been completed.` in the logs, it's ready to use.
+Run ComfyUI. All dependencies are pre-installed in the image. On first boot, ComfyUI is copied to your workspace — when you see `[ComfyUI-Manager] All startup tasks have been completed.` in the logs, it's ready to use.
+
+## Version
+
+- ComfyUI: v0.23.0
+- Python: 3.12
+- Torch: 2.10.0+cu130
+- Torchvision: 0.25.0+cu130
+- Torchaudio: 2.10.0+cu130
+- CUDA profile: cu130
+- Pre-installed custom nodes:
+  - ComfyUI-Manager
 
 ## Access
 
 - `8188`: ComfyUI web UI
-- `8080`: FileBrowser (admin / adminadmin12)
-- `8888`: JupyterLab (token via `JUPYTER_PASSWORD`, root at `/workspace`)
-- `22`: SSH (set `PUBLIC_KEY` or check logs for generated root password)
-
-## Pre-installed custom nodes
-
-- ComfyUI-Manager
-- ComfyUI-KJNodes
-- Civicomfy
-- ComfyUI-RunpodDirect
-
-## Source Code
-
-This is an open source template. Source code available at: [github.com/runpod-workers/comfyui-base](https://github.com/runpod-workers/comfyui-base)
+- `8080`: FileBrowser
+- `8888`: JupyterLab
+- `22`: SSH
 
 ## Custom Arguments
 
