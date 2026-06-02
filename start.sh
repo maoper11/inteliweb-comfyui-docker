@@ -2,7 +2,7 @@
 set -e  # Exit the script if any statement returns a non-true return value
 
 COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
-VENV_DIR="$COMFYUI_DIR/.venv-cu128"
+VENV_DIR="$COMFYUI_DIR/.venv-cu130"
 OLD_VENV_DIR="$COMFYUI_DIR/.venv"
 FILEBROWSER_CONFIG="/root/.config/filebrowser/config.json"
 DB_FILE="/workspace/runpod-slim/filebrowser.db"
@@ -136,11 +136,11 @@ if [ ! -f "$ARGS_FILE" ]; then
     echo "Created empty ComfyUI arguments file at $ARGS_FILE"
 fi
 
-# Migrate old CUDA 12.4 venv to cu128
+# Migrate old generic venv to cu130 venv
 if [ -d "$OLD_VENV_DIR" ] && [ ! -d "$VENV_DIR" ]; then
     NODE_COUNT=$(find "$COMFYUI_DIR/custom_nodes" -maxdepth 2 -name "requirements.txt" 2>/dev/null | wc -l)
     echo "============================================="
-    echo "  CUDA 12.4 -> 12.8 migration"
+    echo "  Existing .venv -> .venv-cu130 migration"
     echo "  Reinstalling deps for $NODE_COUNT custom nodes"
     echo "  This may take several minutes"
     echo "============================================="
@@ -223,7 +223,7 @@ echo "============================================="
 echo "  ComfyUI crashed — check the logs above."
 echo "  SSH and JupyterLab are still available."
 echo "  To restart after fixing:"
-echo "    cd $COMFYUI_DIR && source .venv-cu128/bin/activate"
+echo "    cd $COMFYUI_DIR && source .venv-cu130/bin/activate"
 echo "    python main.py $FIXED_ARGS"
 echo "============================================="
 

@@ -74,7 +74,7 @@ RUN cd /tmp/build/ComfyUI && \
     git -c user.name=- -c user.email=- commit -q -m "ComfyUI-Manager ${MANAGER_SHA}" && \
     git remote add origin https://github.com/ltdrdata/ComfyUI-Manager.git
 
-# Generate lock file from all requirements (including torch pins), then install with hash verification
+# Generate lock file from ComfyUI requirements, install it, then force-reinstall the pinned Torch cu130 stack
 WORKDIR /tmp/build
 RUN cat ComfyUI/requirements.txt > requirements.in && \
     for node_dir in ComfyUI/custom_nodes/*/; do \
@@ -87,19 +87,73 @@ RUN cat ComfyUI/requirements.txt > requirements.in && \
     echo "jupyter" >> requirements.in && \
     echo "jupyter-resource-usage" >> requirements.in && \
     echo "jupyterlab-nvdashboard" >> requirements.in && \
-    echo "torch==${TORCH_VERSION}" >> constraints.txt && \
-    echo "torchvision==${TORCHVISION_VERSION}" >> constraints.txt && \
-    echo "torchaudio==${TORCHAUDIO_VERSION}" >> constraints.txt && \
-    echo "pillow>=12.1.1" >> constraints.txt && \
     TORCH_INDEX_URL="https://download.pytorch.org/whl/${TORCH_INDEX_SUFFIX}" && \
     PIP_INDEX_URL=https://pypi.org/simple \
     PIP_EXTRA_INDEX_URL="${TORCH_INDEX_URL}" \
-    PIP_CONSTRAINT=constraints.txt \
     pip-compile --generate-hashes --output-file=requirements.lock --strip-extras --allow-unsafe requirements.in && \
     python3.12 -m pip install --no-cache-dir --ignore-installed --require-hashes \
-    --index-url https://pypi.org/simple \
-    --extra-index-url "${TORCH_INDEX_URL}" \
-    -r requirements.lock
+        --index-url https://pypi.org/simple \
+        --extra-index-url "${TORCH_INDEX_URL}" \
+        -r requirements.lock && \
+    python3.12 -m pip uninstall -y torch torchvision torchaudio triton xformers || true && \
+    python3.12 -m pip install --no-cache-dir --force-reinstall --no-deps \
+        torch==${TORCH_VERSION} \
+        torchvision==${TORCHVISION_VERSION} \
+        torchaudio==${TORCHAUDIO_VERSION} \
+        --index-url "${TORCH_INDEX_URL}" && \
+    python3.12 -m pip install --no-cache-dir --force-reinstall --no-deps \
+        "triton>=3.6,<3.7" && \
+    python3.12 - <<'PY'
+import torch
+
+try:
+    import torchvision
+except Exception as e:
+    torchvision = None
+    print(f"WARNING: torchvision import failed: {e}")
+
+try:
+    import torchaudio
+except Exception as e:
+    torchaudio = None
+    print(f"WARNING: torchaudio import failed: {e}")
+
+expected = {
+    "torch": "2.10.0+cu130",
+    "torchvision": "0.25.0+cu130",
+    "torchaudio": "2.10.0+cu130",
+    "cuda": "13.0",
+}
+
+actual = {
+    "torch": torch.__version__,
+    "torchvision": getattr(torchvision, "__version__", "IMPORT_FAILED"),
+    "torchaudio": getattr(torchaudio, "__version__", "IMPORT_FAILED"),
+    "cuda": torch.version.cuda,
+}
+
+print("============================================================")
+print("Torch stack verification")
+print("Expected:", expected)
+print("Actual:  ", actual)
+print("============================================================")
+
+mismatches = []
+
+for key, expected_value in expected.items():
+    actual_value = actual.get(key)
+    if actual_value != expected_value:
+        mismatches.append((key, expected_value, actual_value))
+
+if mismatches:
+    print("WARNING: Torch stack does not match the expected pinned versions.")
+    for key, expected_value, actual_value in mismatches:
+        print(f"WARNING: {key}: expected {expected_value}, got {actual_value}")
+    print("WARNING: Build will continue because verification is non-blocking.")
+else:
+    print("OK: Torch 2.10.0+cu130 stack pinned correctly.")
+
+PY
 
 # Pre-populate ComfyUI-Manager cache so first cold start skips the slow registry fetch
 COPY scripts/prebake-manager-cache.py /tmp/prebake-manager-cache.py

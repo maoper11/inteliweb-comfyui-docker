@@ -1,179 +1,665 @@
-# ComfyUI Slim – Developer Conventions
+# Inteliweb ComfyUI Docker – Developer Conventions
 
 This document outlines how to work in this repository from a developer point of view: build targets, runtime behavior, environment, dependency management, customization points, quality gates, and troubleshooting.
+
+This repository is based on the official RunPod ComfyUI Docker template, customized by Inteliweb AI to provide a clean CUDA 13 / cu130 ComfyUI image with only ComfyUI-Manager preinstalled.
+
+---
 
 ## Stack Overview
 
 - **Base OS**: Ubuntu 24.04
 - **GPU stack**:
-  - Regular image: CUDA 12.8, PyTorch (pinned version via docker-bake.hcl, cu128 wheels)
-  - RTX 5090 image: CUDA 13.0, PyTorch (pinned version, cu130 wheels)
-- **Python**: 3.12 (set as system default inside the image)
-- **Package manager**: pip + pip-tools (lock file generated at build time with `pip-compile --generate-hashes`)
-- **Tools bundled**: FileBrowser (port 8080), JupyterLab (port 8888), OpenSSH server (port 22), FFmpeg (NVENC), common CLI tools
-- **Primary app**: ComfyUI, with pre-installed custom nodes
+  - CUDA 13.0
+  - PyTorch cu130 wheels
+  - Targeted primarily for RTX 5090 / Blackwell and other NVIDIA GPUs compatible with the selected CUDA/PyTorch stack
+
+- **Python**: 3.12, set as the default system Python inside the image
+- **Package manager**: pip + pip-tools
+- **Dependency approach**:
+  - ComfyUI and ComfyUI-Manager requirements are installed during the Docker build
+  - Torch, torchvision, torchaudio, and Triton are then force-reinstalled to the required cu130 stack
+  - A non-blocking Torch stack verification is printed during build
+
+- **Tools bundled**:
+  - FileBrowser on port `8080`
+  - JupyterLab on port `8888`
+  - OpenSSH server on port `22`
+  - FFmpeg
+  - Common CLI tools
+
+- **Primary app**: ComfyUI
+- **Preinstalled custom nodes**:
+  - ComfyUI-Manager only
+
+---
 
 ## Repository Layout
 
-- `Dockerfile` – Single Dockerfile for all variants (CUDA version controlled via build args)
-- `start.sh` – Runtime bootstrap (shared by all variants)
-- `docker-bake.hcl` – Buildx bake targets (`regular`, `dev`, `rtx5090`) and all version pins (single source of truth)
-- `scripts/fetch-hashes.sh` – Fetches latest custom node commit hashes from GitHub
+- `Dockerfile` – Main Dockerfile for the cu130 image
+- `start.sh` – Runtime bootstrap script
+- `docker-bake.hcl` – Docker Buildx Bake targets and version pins
 - `README.md` – User-facing overview
-- `docs/context.md` – This document
+- `docs/context.md` – Developer conventions and internal implementation notes
 
 At runtime, the container uses:
 
 - `/workspace/runpod-slim/ComfyUI` – ComfyUI checkout and virtual environment
-- `/workspace/runpod-slim/comfyui_args.txt` – Optional line-delimited ComfyUI args
-- `/workspace/runpod-slim/filebrowser.db` – FileBrowser DB
+- `/workspace/runpod-slim/ComfyUI/.venv-cu130` – Python virtual environment used by ComfyUI
+- `/workspace/runpod-slim/comfyui_args.txt` – Optional line-delimited ComfyUI startup args
+- `/workspace/runpod-slim/filebrowser.db` – FileBrowser database
+
+---
+
+## Docker Image
+
+Main Docker Hub repository:
+
+```text
+maoper/inteliweb-comfyui
+```
+
+Recommended production tag:
+
+```text
+maoper/inteliweb-comfyui:v0.23.0-torch2.10-cu130-py312
+```
+
+This tag name indicates the intended stack:
+
+- ComfyUI `v0.23.0`
+- Torch `2.10.0+cu130`
+- Python `3.12`
+- CUDA / PyTorch wheel profile `cu130`
+
+The build includes a verification step that prints the installed Torch stack. The verification is intentionally non-blocking: it warns if versions do not match but does not stop the Docker build.
+
+---
 
 ## Build Targets
 
-Use Docker Buildx Bake with the provided HCL file.
+Use Docker Buildx Bake with the provided `docker-bake.hcl`.
 
-- `regular` (default production):
-  - CUDA 12.8, PyTorch cu128
-  - Tag: `runpod/comfyui:${TAG}` (defaults to `slim`)
-  - Platform: `linux/amd64`
-- `dev` (local testing):
-  - Same as regular, output: local docker image (not pushed)
-  - Tag: `runpod/comfyui:dev`
-- `rtx5090` (Blackwell / 5090):
-  - CUDA 13.0, PyTorch cu130
-  - Tag: `runpod/comfyui:${TAG}-5090`
+### `dev`
 
-Example commands:
+Local testing target.
 
-```bash
-# Build default regular target
-docker buildx bake -f docker-bake.hcl regular
+- Platform: `linux/amd64`
+- Output: local Docker image
+- Tag:
 
-# Build dev image locally
-docker buildx bake -f docker-bake.hcl dev
-
-# Build 5090 variant
-docker buildx bake -f docker-bake.hcl rtx5090
+```text
+maoper/inteliweb-comfyui:dev-cu130
 ```
 
-Build args and env:
+Command:
 
-- `TAG` variable in `docker-bake.hcl` controls the tag suffix (default `slim`).
-- Build uses BuildKit inline cache.
+```bash
+docker buildx bake dev
+```
 
-## Runtime Behavior
+For a clean rebuild:
 
-Startup is handled by `start.sh` (shared by all variants):
+```bash
+docker buildx bake dev --no-cache
+```
 
-- Initializes SSH server. If `PUBLIC_KEY` is set, it is added to `~/.ssh/authorized_keys`; otherwise a random root password is generated and printed to logs.
-- Exports selected env vars broadly to `/etc/environment`, PAM, and `~/.ssh/environment` for non-interactive shells.
-- Initializes and starts FileBrowser on port 8080 (root `/workspace`). Default admin user is created on first run.
-- Starts JupyterLab on port 8888, root at `/workspace`. Token set via `JUPYTER_PASSWORD` if provided.
-- Ensures `comfyui_args.txt` exists.
-- On first boot: copies baked ComfyUI and custom nodes from `/opt/comfyui-baked` to `/workspace/runpod-slim/ComfyUI/`, then creates a Python 3.12 venv with `--system-site-packages`.
-- On subsequent boots: activates existing venv (no network calls).
-- Starts ComfyUI **in the foreground** via `exec` (becomes PID 1) with fixed args `--listen 0.0.0.0 --port 8188` plus any custom args from `comfyui_args.txt`. Logs go directly to container stdout.
+---
 
-## Ports
+### `cu130`
 
-- 8188 – ComfyUI
-- 8080 – FileBrowser
-- 8888 – JupyterLab
-- 22 – SSH
+Production target.
 
-Expose settings are declared in Dockerfiles.
+- Platform: `linux/amd64`
+- Output: Docker registry
+- Tag:
 
-## Environment Variables
+```text
+maoper/inteliweb-comfyui:v0.23.0-torch2.10-cu130-py312
+```
 
-Recognized at runtime by the start scripts:
+Command:
 
-- `PUBLIC_KEY` – If provided, enables key-based SSH for root; otherwise a random password is generated and printed.
-- `JUPYTER_PASSWORD` – If set, used as the JupyterLab token (no browser; root at `/workspace`).
-- GPU/CUDA-related environment variables are propagated (`CUDA*`, `LD_LIBRARY_PATH`, `PYTHONPATH`, and `RUNPOD_*` vars if present in the environment).
+```bash
+docker buildx bake cu130
+```
+
+If the target does not define `output = ["type=registry"]`, use:
+
+```bash
+docker buildx bake cu130 --push
+```
+
+---
+
+## Version Pins
+
+The main version pins live in `docker-bake.hcl`.
+
+Expected key variables:
+
+```hcl
+variable "DOCKER_REPO" {
+  default = "maoper/inteliweb-comfyui"
+}
+
+variable "TAG" {
+  default = "v0.23.0-torch2.10-cu130-py312"
+}
+
+variable "COMFYUI_VERSION" {
+  default = "v0.23.0"
+}
+
+variable "MANAGER_SHA" {
+  default = "66108ccdbc8c"
+}
+
+variable "TORCH_VERSION" {
+  default = "2.10.0+cu130"
+}
+
+variable "TORCHVISION_VERSION" {
+  default = "0.25.0+cu130"
+}
+
+variable "TORCHAUDIO_VERSION" {
+  default = "2.10.0+cu130"
+}
+
+variable "FILEBROWSER_VERSION" {
+  default = "v2.59.0"
+}
+
+variable "FILEBROWSER_SHA256" {
+  default = "8cd8c3baecb086028111b912f252a6e3169737fa764b5c510139e81f9da87799"
+}
+```
+
+The cu130 build target should pass:
+
+```hcl
+CUDA_VERSION_DASH = "13-0"
+TORCH_INDEX_SUFFIX = "cu130"
+```
+
+---
 
 ## Dependency Management
 
-- Python 3.12 is the default interpreter in the image.
-- Venv location:
-  - Both images: `/workspace/runpod-slim/ComfyUI/.venv-cu128`
-- All dependencies are pre-installed at image build time. No pip installs occur at runtime.
-- **Version pins live in `docker-bake.hcl`** (single source of truth, not in the Dockerfiles). Dockerfiles declare `ARG` names but the default values are set in the bake file:
-  - `COMFYUI_VERSION` — ComfyUI release tag
-  - `MANAGER_SHA`, `KJNODES_SHA`, `CIVICOMFY_SHA`, `RUNPODDIRECT_SHA` — custom node commit hashes
-  - `TORCH_VERSION`, `TORCHVISION_VERSION`, `TORCHAUDIO_VERSION` — PyTorch stack versions (regular image)
-  - `TORCH_VERSION_5090`, `TORCHVISION_VERSION_5090`, `TORCHAUDIO_VERSION_5090` — PyTorch stack versions (5090 image, can diverge)
-  - `CUDA_VERSION_DASH` — CUDA toolkit apt package suffix (e.g., `12-8`, `13-0`)
-  - `TORCH_INDEX_SUFFIX` — PyTorch wheel index (e.g., `cu128`, `cu130`)
-  - `FILEBROWSER_VERSION` + `FILEBROWSER_SHA256` — FileBrowser binary with checksum
-- To update a version: edit the corresponding `variable` block in `docker-bake.hcl`.
-- CI or ad-hoc builds can override any variable via environment variables:
-  ```bash
-  COMFYUI_VERSION=v0.15.0 docker buildx bake regular
-  ```
-- `scripts/fetch-hashes.sh` queries the GitHub API for the latest commit hash of each custom node repo and prints HCL-formatted variable blocks ready to copy-paste into `docker-bake.hcl`. Set `GITHUB_TOKEN` env var for authenticated requests (higher API rate limit).
-- Source code is downloaded as zip archives from GitHub (no git clone in build or runtime).
-- A lock file with SHA256 hashes is generated inside the builder stage using `pip-compile --generate-hashes`.
-- PyTorch wheel index is controlled by `TORCH_INDEX_SUFFIX` build arg (`cu128` for regular, `cu130` for 5090).
-- At runtime, baked ComfyUI is copied from `/opt/comfyui-baked` to `/workspace/runpod-slim/ComfyUI/` on first boot.
+Python dependencies are installed at image build time.
 
-Preinstalled custom nodes:
+The Dockerfile follows this general flow:
 
-- `ComfyUI-Manager` (ltdrdata)
-- `ComfyUI-KJNodes` (kijai)
-- `Civicomfy` (MoonGoblinDev)
-- `ComfyUI-RunpodDirect` (MadiatorLabs)
+1. Download ComfyUI source archive based on `COMFYUI_VERSION`.
+2. Download ComfyUI-Manager source archive based on `MANAGER_SHA`.
+3. Initialize Git metadata for ComfyUI and ComfyUI-Manager so ComfyUI-Manager can detect repositories correctly.
+4. Build a `requirements.in` file from:
+   - `ComfyUI/requirements.txt`
+   - `ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt`
+   - extra tools such as JupyterLab and OpenCV
+
+5. Use `pip-compile` to generate a hashed `requirements.lock`.
+6. Install the locked requirements.
+7. Uninstall any previously resolved Torch stack.
+8. Force-install the required cu130 Torch stack:
+   - `torch==2.10.0+cu130`
+   - `torchvision==0.25.0+cu130`
+   - `torchaudio==2.10.0+cu130`
+
+9. Install Triton:
+   - `triton>=3.6,<3.7`
+
+10. Run a non-blocking verification that prints the actual installed Torch stack.
+
+The Torch verification should not raise an exception or stop the build. It should only print warnings if the installed versions do not match the expected values.
+
+Example expected output:
+
+```text
+Torch stack verification
+Expected: {'torch': '2.10.0+cu130', 'torchvision': '0.25.0+cu130', 'torchaudio': '2.10.0+cu130', 'cuda': '13.0'}
+Actual:   {'torch': '2.10.0+cu130', 'torchvision': '0.25.0+cu130', 'torchaudio': '2.10.0+cu130', 'cuda': '13.0'}
+OK: Torch 2.10.0+cu130 stack pinned correctly.
+```
+
+If the result does not match, the build should continue but print warnings.
+
+---
+
+## Runtime Behavior
+
+Startup is handled by `start.sh`.
+
+At container start:
+
+1. SSH host keys are generated if needed.
+2. Environment variables are exported broadly for shell and SSH sessions.
+3. FileBrowser is initialized and started on port `8080`.
+4. JupyterLab is started on port `8888`.
+5. `/workspace/runpod-slim/comfyui_args.txt` is created if missing.
+6. On first boot:
+   - Baked ComfyUI is copied from `/opt/comfyui-baked` to `/workspace/runpod-slim/ComfyUI`
+   - A Python 3.12 virtual environment is created at:
+
+```text
+/workspace/runpod-slim/ComfyUI/.venv-cu130
+```
+
+7. On subsequent boots:
+   - The existing `.venv-cu130` environment is reused
+   - No network install should be required
+
+8. ComfyUI starts in the foreground with:
+
+```bash
+python main.py --listen 0.0.0.0 --port 8188 --enable-cors-header
+```
+
+Additional args can be added through:
+
+```text
+/workspace/runpod-slim/comfyui_args.txt
+```
+
+One argument per line. Lines starting with `#` are ignored.
+
+---
+
+## Ports
+
+Expose these ports in RunPod, Vast.ai, or any compatible Docker platform:
+
+| Service     | Port | Protocol |
+| ----------- | ---: | -------- |
+| ComfyUI     | 8188 | HTTP     |
+| FileBrowser | 8080 | HTTP     |
+| JupyterLab  | 8888 | HTTP     |
+| SSH         |   22 | TCP      |
+
+For RunPod templates, configure:
+
+```text
+HTTP ports:
+8188
+8080
+8888
+
+TCP ports:
+22
+```
+
+---
+
+## RunPod Template Configuration
+
+Recommended RunPod Pod Template values:
+
+```text
+Template Name:
+ComfyUI 0.23.0 - Torch 2.10 CU130
+
+Container Image:
+maoper/inteliweb-comfyui:v0.23.0-torch2.10-cu130-py312
+
+Container Start Command:
+leave empty
+
+Container Disk:
+50 GB minimum
+100 GB or more recommended
+
+Volume Disk:
+150 GB recommended
+
+Volume Mount Path:
+/workspace
+```
+
+Recommended GPUs:
+
+```text
+NVIDIA RTX 5090
+NVIDIA RTX 4090
+NVIDIA RTX 3090
+NVIDIA RTX 3090 Ti
+```
+
+The image is primarily built for CUDA 13 / cu130. RTX 5090 is the main target, but other NVIDIA GPUs may also run the image if the driver and stack are compatible.
+
+---
+
+## Environment Variables
+
+Recognized at runtime:
+
+- `PUBLIC_KEY`
+  - If set, enables SSH key-based login for root.
+  - If not set, a random root password is generated and printed to logs.
+
+- `JUPYTER_PASSWORD`
+  - If set, used as the JupyterLab token.
+
+GPU/CUDA-related variables are propagated when present:
+
+- `CUDA*`
+- `LD_LIBRARY_PATH`
+- `PYTHONPATH`
+- `RUNPOD_*`
+
+---
+
+## Preinstalled Custom Nodes
+
+Only this custom node is baked into the image:
+
+```text
+ComfyUI-Manager
+```
+
+The following nodes are intentionally not baked:
+
+```text
+ComfyUI-KJNodes
+Civicomfy
+ComfyUI-RunpodDirect
+```
+
+Users can install additional custom nodes later through ComfyUI-Manager. Those installations are user-managed and may affect compatibility.
+
+---
 
 ## Customization Points
 
-- `comfyui_args.txt` – Add one CLI arg per line; comments starting with `#` are ignored. These are appended after fixed args.
-- Add/remove custom nodes by adding/removing download blocks and ARGs in the Dockerfile.
-- Additional system packages: modify the Dockerfile `apt-get install` lines.
-- Users can install additional custom nodes at runtime via ComfyUI-Manager (user's responsibility, not baked).
+### ComfyUI args
 
-## Dev Conventions
+Edit:
 
-- Keep images lean. All Python dependencies are baked at build time via lock file.
-- To update a dependency: bump the relevant variable in `docker-bake.hcl`, push, trigger build.
-- Source archives are used instead of `git clone` — no git dependency in builds.
-- Avoid changing ports; they are referenced by external templates (RunPod/UI tooling).
-- Use Python 3.12. Do not downgrade in scripts.
-- When adding new env vars needed by downstream processes, ensure they are exported in `export_env_vars()` the same way as others.
-- Shell scripting: keep `set -e` at top; prefer explicit guards; write idempotent steps safe to re-run.
-- Runtime `start.sh` must NEVER call pip, git clone, or execute arbitrary install scripts. All dependencies are baked in the image.
+```text
+/workspace/runpod-slim/comfyui_args.txt
+```
+
+Example:
+
+```text
+--preview-method auto
+--disable-smart-memory
+```
+
+### Add baked custom nodes
+
+To add a custom node permanently:
+
+1. Add an `ARG` or version variable in `docker-bake.hcl`.
+2. Add a download block in the Dockerfile.
+3. Add Git initialization if ComfyUI-Manager should detect it as a repository.
+4. Rebuild the image.
+
+### Change Torch version
+
+To change the Torch stack:
+
+1. Edit these variables in `docker-bake.hcl`:
+
+```hcl
+TORCH_VERSION
+TORCHVISION_VERSION
+TORCHAUDIO_VERSION
+TORCH_INDEX_SUFFIX
+```
+
+2. Update the expected values in the non-blocking verification block inside the Dockerfile.
+3. Rebuild with:
+
+```bash
+docker buildx bake dev --no-cache
+```
+
+4. Verify the runtime result inside the container.
+
+---
 
 ## Local Development Tips
 
-- Use the `dev` target to build a locally loadable image without pushing:
-  ```bash
-  docker buildx bake -f docker-bake.hcl dev
-  docker run --rm -p 8188:8188 -p 8080:8080 -p 8888:8888 -p 2222:22 \
-    -e PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" \
-    -e JUPYTER_PASSWORD=yourtoken \
-    -v "$PWD/workspace":/workspace \
-    runpod/comfyui:dev
-  ```
-- Mount a host `workspace` to persist ComfyUI, args, and FileBrowser DB.
+Build locally:
+
+```bash
+docker buildx bake dev
+```
+
+Run locally:
+
+```bash
+docker run --rm -it \
+  -p 8188:8188 \
+  -p 8080:8080 \
+  -p 8888:8888 \
+  -p 2222:22 \
+  -e JUPYTER_PASSWORD=yourtoken \
+  -v "$PWD/workspace":/workspace \
+  maoper/inteliweb-comfyui:dev-cu130
+```
+
+Check the installed Torch stack:
+
+```bash
+docker run --rm -it maoper/inteliweb-comfyui:dev-cu130 bash
+```
+
+Inside the container:
+
+```bash
+python3 - <<'PY'
+import torch, torchvision, torchaudio
+print("torch:", torch.__version__)
+print("torchvision:", torchvision.__version__)
+print("torchaudio:", torchaudio.__version__)
+print("cuda:", torch.version.cuda)
+print("cuda available:", torch.cuda.is_available())
+PY
+```
+
+Expected result:
+
+```text
+torch: 2.10.0+cu130
+torchvision: 0.25.0+cu130
+torchaudio: 2.10.0+cu130
+cuda: 13.0
+```
+
+---
+
+## Quality Gates
+
+Before publishing a new image:
+
+1. Build the local dev target:
+
+```bash
+docker buildx bake dev --no-cache
+```
+
+2. Verify Docker image exists locally:
+
+```bash
+docker images | grep inteliweb-comfyui
+```
+
+3. Run the image and verify:
+
+```bash
+python3 - <<'PY'
+import torch, torchvision, torchaudio
+print(torch.__version__)
+print(torchvision.__version__)
+print(torchaudio.__version__)
+print(torch.version.cuda)
+PY
+```
+
+4. Confirm ComfyUI starts on port `8188`.
+5. Confirm FileBrowser starts on port `8080`.
+6. Confirm JupyterLab starts on port `8888`.
+7. Confirm SSH is available on port `22` if needed.
+8. Confirm only ComfyUI-Manager is present in:
+
+```text
+/workspace/runpod-slim/ComfyUI/custom_nodes
+```
+
+9. Confirm the Python executable path is:
+
+```text
+/workspace/runpod-slim/ComfyUI/.venv-cu130/bin/python
+```
+
+---
 
 ## Troubleshooting
 
-- ComfyUI not reachable on 8188:
-  - Check container logs (ComfyUI runs in foreground, logs go to stdout).
-  - Ensure `comfyui_args.txt` doesn't contain invalid flags (comments with `#` are okay).
-- JupyterLab auth:
-  - If `JUPYTER_PASSWORD` is unset, Jupyter may allow tokenless or default behavior. Set it explicitly if needed.
-- SSH access:
-  - If no `PUBLIC_KEY` is provided, a random root password is generated and printed to stdout. Check container logs.
-  - Ensure port 22 is mapped from the host, e.g., `-p 2222:22`.
-- GPU/torch issues on 5090 image:
-  - Verify you're running the `-5090` tag.
-  - 5090 builds use CUDA 13.0 (`cu130` wheels); confirm host driver supports CUDA 13.0 (driver 575+).
+### ComfyUI not reachable on port 8188
+
+Check container logs. ComfyUI runs in the foreground, so logs should go directly to stdout.
+
+Also check:
+
+```text
+/workspace/runpod-slim/comfyui_args.txt
+```
+
+Remove invalid CLI args if necessary.
+
+---
+
+### Torch version does not match the tag
+
+Run:
+
+```bash
+python3 - <<'PY'
+import torch, torchvision, torchaudio
+print("torch:", torch.__version__)
+print("torchvision:", torchvision.__version__)
+print("torchaudio:", torchaudio.__version__)
+print("cuda:", torch.version.cuda)
+PY
+```
+
+If Torch is not the intended version, rebuild without cache:
+
+```bash
+docker buildx bake dev --no-cache
+```
+
+Then check the Docker build logs for the “Torch stack verification” section.
+
+---
+
+### Old `.venv-cu128` still appears
+
+This usually means the Pod is using an old persistent volume created before the `.venv-cu130` rename.
+
+For a clean test, use a new volume or delete the old venvs:
+
+```bash
+rm -rf /workspace/runpod-slim/ComfyUI/.venv-cu128
+rm -rf /workspace/runpod-slim/ComfyUI/.venv-cu130
+```
+
+Then restart the Pod.
+
+---
+
+### FileBrowser login
+
+Default FileBrowser settings are initialized on first boot. Check container logs for initialization messages.
+
+FileBrowser runs on:
+
+```text
+8080
+```
+
+---
+
+### JupyterLab token
+
+Set:
+
+```text
+JUPYTER_PASSWORD
+```
+
+in the template environment variables if a fixed token is desired.
+
+---
+
+### SSH access
+
+Expose TCP port:
+
+```text
+22
+```
+
+If `PUBLIC_KEY` is provided, it is used for root SSH login. Otherwise, a generated root password should appear in logs.
+
+---
 
 ## Release & Tagging
 
-- Default tag base is `slim` via `TAG` in `docker-bake.hcl`.
-- For 5090 builds, the pushed tag is `${TAG}-5090`.
-- Keep `README.md` ports and features in sync when changing defaults.
+Use explicit tags. Avoid relying only on `latest`.
+
+Recommended tag format:
+
+```text
+v<COMFYUI_VERSION>-torch<TORCH_VERSION>-cu130-py312
+```
+
+Current recommended tag:
+
+```text
+v0.23.0-torch2.10-cu130-py312
+```
+
+Production image:
+
+```text
+maoper/inteliweb-comfyui:v0.23.0-torch2.10-cu130-py312
+```
+
+For future variants, use separate tags:
+
+```text
+maoper/inteliweb-comfyui:v0.23.0-torch2.12-cu130-py312
+maoper/inteliweb-comfyui:v0.23.0-torch2.10-cu128-py312
+maoper/inteliweb-comfyui:v0.22.0-torch2.10-cu130-py312
+```
+
+---
+
+## Git Workflow
+
+Recommended flow:
+
+```bash
+git status
+git add Dockerfile docker-bake.hcl start.sh README.md docs/context.md
+git commit -m "Update cu130 ComfyUI Docker developer conventions"
+git push
+```
+
+If working in a feature branch:
+
+```bash
+git push origin comfy023-cu130-manager-only
+```
+
+Then create a Pull Request into `main`.
+
+---
 
 ## License
 
-- GPLv3 as per `LICENSE`.
+This repository is derived from the official RunPod ComfyUI Docker template and retains the original GPLv3 license unless otherwise changed in `LICENSE`.
