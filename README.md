@@ -1,4 +1,4 @@
-Run ComfyUI. All dependencies are pre-installed in the image. On first boot, ComfyUI is copied to your workspace — when you see `[ComfyUI-Manager] All startup tasks have been completed.` in the logs, it's ready to use.
+Run ComfyUI. ComfyUI-Manager pre-installed in the image. On first boot, ComfyUI is copied to your workspace — when you see `[ComfyUI-Manager] All startup tasks have been completed.` in the logs, it's ready to use.
 
 ## Version
 
@@ -8,8 +8,10 @@ Run ComfyUI. All dependencies are pre-installed in the image. On first boot, Com
 - Torchvision: 0.25.0+cu130
 - Torchaudio: 2.10.0+cu130
 - CUDA profile: cu130
-- Pre-installed custom nodes:
-  - ComfyUI-Manager
+
+## Pre-installed custom nodes:
+
+- ComfyUI-Manager
 
 ## Access
 
@@ -32,3 +34,7 @@ Edit `/workspace/runpod-slim/comfyui_args.txt` (one arg per line):
 - `/workspace/runpod-slim/ComfyUI`: ComfyUI install
 - `/workspace/runpod-slim/comfyui_args.txt`: ComfyUI args
 - `/workspace/runpod-slim/filebrowser.db`: FileBrowser DB
+
+---
+
+Built with ❤️ by [Inteliweb AI](https://www.youtube.com/@InteliwebAI)
