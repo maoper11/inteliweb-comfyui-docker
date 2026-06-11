@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
-ENV FILEBROWSER_CONFIG=/workspace/runpod-slim/.filebrowser.json
+ENV FILEBROWSER_CONFIG=/workspace/.filebrowser.json
 
 # ---------------------------------------------------------------------------
 # Build args from docker-bake.hcl
@@ -23,7 +23,7 @@ ARG TRITON_VERSION
 ARG FILEBROWSER_VERSION
 
 ENV TEMPLATE_VERSION=${RELEASE}
-ENV VENV_PATH=/workspace/runpod-slim/ComfyUI/.venv
+ENV VENV_PATH=/workspace/ComfyUI/.venv
 
 # ---------------------------------------------------------------------------
 # System dependencies
@@ -253,9 +253,9 @@ RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/
 # Workspace
 # ---------------------------------------------------------------------------
 
-RUN mkdir -p /workspace/runpod-slim
+RUN mkdir -p /workspace
 
-WORKDIR /workspace/runpod-slim
+WORKDIR /workspace
 
 EXPOSE 8188 22 8888 8080
 

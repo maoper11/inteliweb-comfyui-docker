@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e  # Exit the script if any statement returns a non-true return value
-COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
+COMFYUI_DIR="/workspace/ComfyUI"
 VENV_DIR="$COMFYUI_DIR/.venv"
 FILEBROWSER_CONFIG="/root/.config/filebrowser/config.json"
-DB_FILE="/workspace/runpod-slim/filebrowser.db"
+DB_FILE="/workspace/filebrowser.db"
 
 # ---------------------------------------------------------------------------- #
 #                          Function Definitions                                  #
@@ -128,7 +128,7 @@ nohup filebrowser &> /filebrowser.log &
 start_jupyter
 
 # Create default comfyui_args.txt if it doesn't exist
-ARGS_FILE="/workspace/runpod-slim/comfyui_args.txt"
+ARGS_FILE="/workspace/comfyui_args.txt"
 if [ ! -f "$ARGS_FILE" ]; then
     echo "# Add your custom ComfyUI arguments here (one per line)" > "$ARGS_FILE"
     echo "Created empty ComfyUI arguments file at $ARGS_FILE"

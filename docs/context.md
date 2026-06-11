@@ -472,37 +472,11 @@ Additional args can be added through `comfyui_args.txt`.
 Current runtime layout:
 
 ```text
-/workspace/runpod-slim/ComfyUI
-/workspace/runpod-slim/ComfyUI/.venv
-/workspace/runpod-slim/comfyui_args.txt
-/workspace/runpod-slim/filebrowser.db
-```
-
-Important note:
-
-```text
-The /workspace directory is the persistent mount point in RunPod.
-The runpod-slim subfolder is not required by RunPod itself.
-It can be removed in a future cleanup if the repository is standardized to /workspace/ComfyUI.
-```
-
-If the repository is simplified later, the recommended layout is:
-
-```text
 /workspace/ComfyUI
 /workspace/ComfyUI/.venv
 /workspace/comfyui_args.txt
 /workspace/filebrowser.db
 ```
-
-When changing this, update both:
-
-```text
-Dockerfile
-start.sh
-```
-
-and verify no references to `runpod-slim` remain.
 
 ---
 
