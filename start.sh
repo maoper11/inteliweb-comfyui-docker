@@ -1,9 +1,7 @@
 #!/bin/bash
 set -e  # Exit the script if any statement returns a non-true return value
-
 COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
-VENV_DIR="$COMFYUI_DIR/.venv-cu130"
-OLD_VENV_DIR="$COMFYUI_DIR/.venv"
+VENV_DIR="$COMFYUI_DIR/.venv"
 FILEBROWSER_CONFIG="/root/.config/filebrowser/config.json"
 DB_FILE="/workspace/runpod-slim/filebrowser.db"
 
@@ -136,42 +134,6 @@ if [ ! -f "$ARGS_FILE" ]; then
     echo "Created empty ComfyUI arguments file at $ARGS_FILE"
 fi
 
-# Migrate old generic venv to cu130 venv
-if [ -d "$OLD_VENV_DIR" ] && [ ! -d "$VENV_DIR" ]; then
-    NODE_COUNT=$(find "$COMFYUI_DIR/custom_nodes" -maxdepth 2 -name "requirements.txt" 2>/dev/null | wc -l)
-    echo "============================================="
-    echo "  Existing .venv -> .venv-cu130 migration"
-    echo "  Reinstalling deps for $NODE_COUNT custom nodes"
-    echo "  This may take several minutes"
-    echo "============================================="
-    mv "$OLD_VENV_DIR" "${OLD_VENV_DIR}.bak"
-    cd "$COMFYUI_DIR"
-    python3.12 -m venv --system-site-packages "$VENV_DIR"
-    source "$VENV_DIR/bin/activate"
-    python -m ensurepip
-    # Skip nodes baked into the image — their deps are in system site-packages
-    BAKED_NODES="ComfyUI-Manager ComfyUI-KJNodes Civicomfy ComfyUI-RunpodDirect"
-    CURRENT=0
-    INSTALLED=0
-    for req in "$COMFYUI_DIR"/custom_nodes/*/requirements.txt; do
-        if [ -f "$req" ]; then
-            NODE_NAME=$(basename "$(dirname "$req")")
-            case " $BAKED_NODES " in
-                *" $NODE_NAME "*) continue ;;
-            esac
-            CURRENT=$((CURRENT + 1))
-            echo "[$CURRENT] $NODE_NAME"
-            pip install -r "$req" 2>&1 | grep -E "^(Successfully|ERROR)" || true
-            INSTALLED=$((INSTALLED + 1))
-        fi
-    done
-    echo "Upgrading ComfyUI requirements..."
-    pip install --upgrade -r "$COMFYUI_DIR/requirements.txt" 2>&1 | grep -E "^(Successfully|ERROR)" || true
-    echo "Migration complete — $INSTALLED user nodes processed (${NODE_COUNT} total, baked nodes skipped)"
-    echo "Old venv backed up at ${OLD_VENV_DIR}.bak — delete it to free space:"
-    echo "  rm -rf ${OLD_VENV_DIR}.bak"
-fi
-
 # Setup ComfyUI if needed
 if [ ! -d "$COMFYUI_DIR" ] || [ ! -d "$VENV_DIR" ]; then
     echo "First time setup: Copying baked ComfyUI to workspace..."
@@ -223,7 +185,7 @@ echo "============================================="
 echo "  ComfyUI crashed — check the logs above."
 echo "  SSH and JupyterLab are still available."
 echo "  To restart after fixing:"
-echo "    cd $COMFYUI_DIR && source .venv-cu130/bin/activate"
+echo "    cd $COMFYUI_DIR && source .venv/bin/activate"
 echo "    python main.py $FIXED_ARGS"
 echo "============================================="
 

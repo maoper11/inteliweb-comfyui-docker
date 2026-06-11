@@ -1,67 +1,118 @@
-# ============================================================================
-# Stage 1: Builder - Download pinned sources and install all Python packages
-# ============================================================================
-FROM ubuntu:24.04 AS builder
+ARG BASE_IMAGE=nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
+ENV FILEBROWSER_CONFIG=/workspace/runpod-slim/.filebrowser.json
 
-# ---- Version pins (set in docker-bake.hcl) ----
+# ---------------------------------------------------------------------------
+# Build args from docker-bake.hcl
+# ---------------------------------------------------------------------------
+
+ARG RELEASE
 ARG COMFYUI_VERSION
 ARG MANAGER_SHA
+
+ARG INDEX_URL
 ARG TORCH_VERSION
 ARG TORCHVISION_VERSION
 ARG TORCHAUDIO_VERSION
+ARG TRITON_VERSION
 
-# ---- CUDA variant (set in docker-bake.hcl per target) ----
-ARG CUDA_VERSION_DASH=12-8
-ARG TORCH_INDEX_SUFFIX=cu128
+ARG FILEBROWSER_VERSION
+ARG FILEBROWSER_SHA256
 
-# Install minimal dependencies needed for building
+ENV TEMPLATE_VERSION=${RELEASE}
+ENV VENV_PATH=/workspace/runpod-slim/ComfyUI/.venv
+
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-    wget \
-    curl \
-    git \
-    ca-certificates \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    build-essential \
-    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
-    && dpkg -i cuda-keyring_1.1-1_all.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends cuda-minimal-build-${CUDA_VERSION_DASH} libcusparse-dev-${CUDA_VERSION_DASH} \
+        git \
+        python3.12 \
+        python3.12-venv \
+        python3.12-dev \
+        build-essential \
+        libssl-dev \
+        wget \
+        gnupg \
+        xz-utils \
+        openssh-client \
+        openssh-server \
+        nano \
+        curl \
+        htop \
+        tmux \
+        ca-certificates \
+        less \
+        net-tools \
+        iputils-ping \
+        procps \
+        openssl \
+        ffmpeg \
+        unzip \
+        rsync \
+        jq \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && rm cuda-keyring_1.1-1_all.deb \
     && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED
 
-# Install pip and pip-tools for lock file generation
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
-    python3.12 get-pip.py && \
-    python3.12 -m pip install --no-cache-dir pip-tools && \
-    rm get-pip.py
+# ---------------------------------------------------------------------------
+# Python / pip
+# ---------------------------------------------------------------------------
 
-# Set CUDA environment for building
-ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
+    python3.12 /tmp/get-pip.py && \
+    rm /tmp/get-pip.py && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    update-alternatives --set python3 /usr/bin/python3.12 && \
+    python3.12 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Download pinned ComfyUI source archive
+# ---------------------------------------------------------------------------
+# Install pinned Torch stack
+# No --no-deps, so PyTorch can install required NVIDIA runtime wheels.
+# No xformers.
+# ---------------------------------------------------------------------------
+
+RUN python3.12 -m pip install --no-cache-dir --force-reinstall \
+        torch==${TORCH_VERSION} \
+        torchvision==${TORCHVISION_VERSION} \
+        torchaudio==${TORCHAUDIO_VERSION} \
+        --index-url "${INDEX_URL}" && \
+    python3.12 -m pip install --no-cache-dir --force-reinstall \
+        triton==${TRITON_VERSION}
+
+# ---------------------------------------------------------------------------
+# Download pinned ComfyUI source
+# ---------------------------------------------------------------------------
+
 WORKDIR /tmp/build
+
 RUN curl -fSL "https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/${COMFYUI_VERSION}.tar.gz" -o comfyui.tar.gz && \
     mkdir -p ComfyUI && \
     tar xzf comfyui.tar.gz --strip-components=1 -C ComfyUI && \
     rm comfyui.tar.gz
 
-# Download only ComfyUI-Manager as pre-installed custom node
+# ---------------------------------------------------------------------------
+# Download pinned ComfyUI-Manager source
+# ---------------------------------------------------------------------------
+
 WORKDIR /tmp/build/ComfyUI/custom_nodes
-RUN curl -fSL "https://github.com/ltdrdata/ComfyUI-Manager/archive/${MANAGER_SHA}.tar.gz" -o manager.tar.gz && \
+
+RUN curl -fSL "https://github.com/Comfy-Org/ComfyUI-Manager/archive/${MANAGER_SHA}.tar.gz" -o manager.tar.gz && \
     mkdir -p ComfyUI-Manager && \
     tar xzf manager.tar.gz --strip-components=1 -C ComfyUI-Manager && \
     rm manager.tar.gz
 
-# Init git repos with upstream remotes so ComfyUI-Manager can detect versions
-# and users can update via Manager at their own risk
+# ---------------------------------------------------------------------------
+# Init git metadata so ComfyUI and Manager can identify versions
+# ---------------------------------------------------------------------------
+
 RUN cd /tmp/build/ComfyUI && \
     git init && \
     git add -A && \
@@ -72,202 +123,147 @@ RUN cd /tmp/build/ComfyUI && \
     git init && \
     git add -A && \
     git -c user.name=- -c user.email=- commit -q -m "ComfyUI-Manager ${MANAGER_SHA}" && \
-    git remote add origin https://github.com/ltdrdata/ComfyUI-Manager.git
+    git remote add origin https://github.com/Comfy-Org/ComfyUI-Manager.git
 
-# Generate lock file from ComfyUI requirements, install it, then force-reinstall the pinned Torch cu130 stack
+# ---------------------------------------------------------------------------
+# Install ComfyUI + Manager requirements with Torch constraints
+# This prevents ComfyUI requirements from upgrading/downgrading Torch.
+# ---------------------------------------------------------------------------
+
 WORKDIR /tmp/build
-RUN cat ComfyUI/requirements.txt > requirements.in && \
-    for node_dir in ComfyUI/custom_nodes/*/; do \
-        if [ -f "$node_dir/requirements.txt" ]; then \
-            cat "$node_dir/requirements.txt" >> requirements.in; \
-        fi; \
-    done && \
-    echo "GitPython" >> requirements.in && \
-    echo "opencv-python" >> requirements.in && \
-    echo "jupyter" >> requirements.in && \
-    echo "jupyter-resource-usage" >> requirements.in && \
-    echo "jupyterlab-nvdashboard" >> requirements.in && \
-    TORCH_INDEX_URL="https://download.pytorch.org/whl/${TORCH_INDEX_SUFFIX}" && \
-    PIP_INDEX_URL=https://pypi.org/simple \
-    PIP_EXTRA_INDEX_URL="${TORCH_INDEX_URL}" \
-    pip-compile --generate-hashes --output-file=requirements.lock --strip-extras --allow-unsafe requirements.in && \
-    python3.12 -m pip install --no-cache-dir --ignore-installed --require-hashes \
-        --index-url https://pypi.org/simple \
-        --extra-index-url "${TORCH_INDEX_URL}" \
-        -r requirements.lock && \
-    python3.12 -m pip uninstall -y torch torchvision torchaudio triton xformers || true && \
-    python3.12 -m pip install --no-cache-dir --force-reinstall --no-deps \
-        torch==${TORCH_VERSION} \
-        torchvision==${TORCHVISION_VERSION} \
-        torchaudio==${TORCHAUDIO_VERSION} \
-        --index-url "${TORCH_INDEX_URL}" && \
-    python3.12 -m pip install --no-cache-dir --force-reinstall --no-deps \
-        "triton>=3.6,<3.7" && \
-    python3.12 - <<'PY'
-import torch
+
+RUN printf "torch==%s\n" "${TORCH_VERSION}" > /tmp/torch-constraints.txt && \
+    printf "torchvision==%s\n" "${TORCHVISION_VERSION}" >> /tmp/torch-constraints.txt && \
+    printf "torchaudio==%s\n" "${TORCHAUDIO_VERSION}" >> /tmp/torch-constraints.txt && \
+    printf "triton==%s\n" "${TRITON_VERSION}" >> /tmp/torch-constraints.txt && \
+    python3.12 -m pip install --no-cache-dir \
+        --extra-index-url "${INDEX_URL}" \
+        -c /tmp/torch-constraints.txt \
+        -r /tmp/build/ComfyUI/requirements.txt && \
+    if [ -f /tmp/build/ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt ]; then \
+        python3.12 -m pip install --no-cache-dir \
+            --extra-index-url "${INDEX_URL}" \
+            -c /tmp/torch-constraints.txt \
+            -r /tmp/build/ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt; \
+    fi && \
+    python3.12 -m pip install --no-cache-dir \
+        GitPython \
+        opencv-python \
+        jupyter \
+        jupyter-resource-usage \
+        jupyterlab-nvdashboard
+
+# ---------------------------------------------------------------------------
+# Informational version print only
+# ---------------------------------------------------------------------------
+
+RUN python3.12 - <<'PY'
+print("============================================================")
+print("Installed Python / Torch stack")
+import sys
+print("python:", sys.version)
+
+try:
+    import torch
+    print("torch:", torch.__version__)
+    print("cuda:", torch.version.cuda)
+    print("cuda available during build:", torch.cuda.is_available())
+except Exception as e:
+    print("WARNING: torch import failed during build:", repr(e))
 
 try:
     import torchvision
+    print("torchvision:", torchvision.__version__)
 except Exception as e:
-    torchvision = None
-    print(f"WARNING: torchvision import failed: {e}")
+    print("WARNING: torchvision import failed during build:", repr(e))
 
 try:
     import torchaudio
+    print("torchaudio:", torchaudio.__version__)
 except Exception as e:
-    torchaudio = None
-    print(f"WARNING: torchaudio import failed: {e}")
+    print("WARNING: torchaudio import failed during build:", repr(e))
 
-expected = {
-    "torch": "2.10.0+cu130",
-    "torchvision": "0.25.0+cu130",
-    "torchaudio": "2.10.0+cu130",
-    "cuda": "13.0",
-}
-
-actual = {
-    "torch": torch.__version__,
-    "torchvision": getattr(torchvision, "__version__", "IMPORT_FAILED"),
-    "torchaudio": getattr(torchaudio, "__version__", "IMPORT_FAILED"),
-    "cuda": torch.version.cuda,
-}
+try:
+    import triton
+    print("triton:", triton.__version__)
+except Exception as e:
+    print("WARNING: triton import failed during build:", repr(e))
 
 print("============================================================")
-print("Torch stack verification")
-print("Expected:", expected)
-print("Actual:  ", actual)
-print("============================================================")
-
-mismatches = []
-
-for key, expected_value in expected.items():
-    actual_value = actual.get(key)
-    if actual_value != expected_value:
-        mismatches.append((key, expected_value, actual_value))
-
-if mismatches:
-    print("WARNING: Torch stack does not match the expected pinned versions.")
-    for key, expected_value, actual_value in mismatches:
-        print(f"WARNING: {key}: expected {expected_value}, got {actual_value}")
-    print("WARNING: Build will continue because verification is non-blocking.")
-else:
-    print("OK: Torch 2.10.0+cu130 stack pinned correctly.")
-
 PY
 
-# Pre-populate ComfyUI-Manager cache so first cold start skips the slow registry fetch
+# ---------------------------------------------------------------------------
+# Pre-populate ComfyUI-Manager cache
+# ---------------------------------------------------------------------------
+
 COPY scripts/prebake-manager-cache.py /tmp/prebake-manager-cache.py
+
 RUN python3.12 /tmp/prebake-manager-cache.py /tmp/build/ComfyUI/user/__manager/cache
 
-# Bake ComfyUI + custom nodes into a known location for runtime copy
+# ---------------------------------------------------------------------------
+# Bake ComfyUI into image
+# ---------------------------------------------------------------------------
+
 RUN cp -r /tmp/build/ComfyUI /opt/comfyui-baked
 
-# ============================================================================
-# Stage 2: Runtime - Clean image with pre-installed packages
-# ============================================================================
-FROM ubuntu:24.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
-ENV FILEBROWSER_CONFIG=/workspace/runpod-slim/.filebrowser.json
-
-# ---- CUDA variant (re-declared for runtime stage) ----
-ARG CUDA_VERSION_DASH=12-8
-
-# ---- FileBrowser version pin (set in docker-bake.hcl) ----
-ARG FILEBROWSER_VERSION
-ARG FILEBROWSER_SHA256
-
-# Update and install runtime dependencies, CUDA, and common tools
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends \
-    git \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    build-essential \
-    libssl-dev \
-    wget \
-    gnupg \
-    xz-utils \
-    openssh-client \
-    openssh-server \
-    nano \
-    curl \
-    htop \
-    tmux \
-    ca-certificates \
-    less \
-    net-tools \
-    iputils-ping \
-    procps \
-    openssl \
-    ffmpeg \
-    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
-    && dpkg -i cuda-keyring_1.1-1_all.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends cuda-minimal-build-${CUDA_VERSION_DASH} \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm cuda-keyring_1.1-1_all.deb \
-    && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED
-
-# Copy Python packages, executables, and Jupyter data from builder stage
-COPY --from=builder /usr/local/lib/python3.12 /usr/local/lib/python3.12
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /usr/local/share/jupyter /usr/local/share/jupyter
-
-# Register Jupyter extensions (pip --ignore-installed skips post-install hooks)
-RUN mkdir -p /usr/local/etc/jupyter/jupyter_server_config.d && \
-    echo '{"ServerApp":{"jpserver_extensions":{"jupyter_server_terminals":true,"jupyterlab":true,"jupyter_resource_usage":true,"jupyterlab_nvdashboard":true}}}' \
-    > /usr/local/etc/jupyter/jupyter_server_config.d/extensions.json
-
-# Copy baked ComfyUI + custom nodes from builder stage
-COPY --from=builder /opt/comfyui-baked /opt/comfyui-baked
-
+# ---------------------------------------------------------------------------
 # Remove uv to force ComfyUI-Manager to use pip
-# uv doesn't respect --system-site-packages properly in this setup
-RUN pip uninstall -y uv 2>/dev/null || true && \
+# ---------------------------------------------------------------------------
+
+RUN python3.12 -m pip uninstall -y uv 2>/dev/null || true && \
     rm -f /usr/local/bin/uv /usr/local/bin/uvx
 
-# Install FileBrowser (pinned version with checksum)
+# ---------------------------------------------------------------------------
+# FileBrowser
+# ---------------------------------------------------------------------------
+
 RUN curl -fSL "https://github.com/filebrowser/filebrowser/releases/download/${FILEBROWSER_VERSION}/linux-amd64-filebrowser.tar.gz" -o /tmp/fb.tar.gz && \
     echo "${FILEBROWSER_SHA256}  /tmp/fb.tar.gz" | sha256sum -c - && \
     tar xzf /tmp/fb.tar.gz -C /usr/local/bin filebrowser && \
     rm /tmp/fb.tar.gz
 
-# Set CUDA environment variables
-ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+# ---------------------------------------------------------------------------
+# Jupyter extensions
+# ---------------------------------------------------------------------------
 
-# Allow container to start on hosts with older CUDA 12.x drivers
+RUN mkdir -p /usr/local/etc/jupyter/jupyter_server_config.d && \
+    echo '{"ServerApp":{"jpserver_extensions":{"jupyter_server_terminals":true,"jupyterlab":true,"jupyter_resource_usage":true,"jupyterlab_nvdashboard":true}}}' \
+    > /usr/local/etc/jupyter/jupyter_server_config.d/extensions.json
+
+# ---------------------------------------------------------------------------
+# CUDA / NVIDIA runtime environment
+# ---------------------------------------------------------------------------
+
+ENV PATH=/usr/local/cuda/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64
+
 ENV NVIDIA_REQUIRE_CUDA=""
 ENV NVIDIA_DISABLE_REQUIRE=true
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
-# Jupyter is included in the lock file and installed in the builder stage
+# ---------------------------------------------------------------------------
+# SSH
+# ---------------------------------------------------------------------------
 
-# Configure SSH for root login
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     mkdir -p /run/sshd && \
     rm -f /etc/ssh/ssh_host_*
 
-# Create workspace directory
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+
 RUN mkdir -p /workspace/runpod-slim
+
 WORKDIR /workspace/runpod-slim
 
-# Expose ports
 EXPOSE 8188 22 8888 8080
 
-# Copy start script
 COPY start.sh /start.sh
+RUN chmod +x /start.sh
 
-# Set Python 3.12 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
-    update-alternatives --set python3 /usr/bin/python3.12
+SHELL ["/bin/bash", "--login", "-c"]
 
 ENTRYPOINT ["/start.sh"]

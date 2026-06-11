@@ -1,31 +1,25 @@
-variable "DOCKER_REPO" {
-  default = "maoper/inteliweb-comfyui"
+variable "REGISTRY" {
+  default = "docker.io"
 }
 
-variable "TAG" {
-  default = "v0.23.0-torch2.10-cu130-py312"
+variable "REGISTRY_USER" {
+  default = "maoper"
 }
 
-# === Version Pins ===
-variable "COMFYUI_VERSION" {
-  default = "v0.23.0"
+variable "APP" {
+  default = "inteliweb-comfyui"
+}
+
+variable "RELEASE" {
+  default = "v0.24.0"
+}
+
+variable "RELEASE_SUFFIX" {
+  default = ""
 }
 
 variable "MANAGER_SHA" {
-  default = "66108ccdbc8c"
-}
-
-# CUDA 13 / cu130 image
-variable "TORCH_VERSION" {
-  default = "2.10.0+cu130"
-}
-
-variable "TORCHVISION_VERSION" {
-  default = "0.25.0+cu130"
-}
-
-variable "TORCHAUDIO_VERSION" {
-  default = "2.10.0+cu130"
+  default = "395bb2442798b804ae672a12eb5433bc10af0212"
 }
 
 variable "FILEBROWSER_VERSION" {
@@ -37,39 +31,157 @@ variable "FILEBROWSER_SHA256" {
 }
 
 group "default" {
-  targets = ["cu130"]
+  targets = ["cu130-py312"]
 }
 
-target "common" {
+group "all" {
+  targets = [
+    "cu130-py312",
+    "cu128-py312"
+  ]
+}
+
+group "dev" {
+  targets = [
+    "dev-cu130-py312",
+    "dev-cu128-py312"
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# ComfyUI v0.24.0
+# Python 3.12
+# Torch 2.10.0
+# CUDA 13.0 / cu130
+# Triton 3.6.0
+# No xformers
+# ---------------------------------------------------------------------------
+
+target "cu130-py312" {
   context = "."
   dockerfile = "Dockerfile"
   platforms = ["linux/amd64"]
 
-  args = {
-    COMFYUI_VERSION = COMFYUI_VERSION
-    MANAGER_SHA = MANAGER_SHA
-    TORCH_VERSION = TORCH_VERSION
-    TORCHVISION_VERSION = TORCHVISION_VERSION
-    TORCHAUDIO_VERSION = TORCHAUDIO_VERSION
-    FILEBROWSER_VERSION = FILEBROWSER_VERSION
-    FILEBROWSER_SHA256 = FILEBROWSER_SHA256
-    CUDA_VERSION_DASH = "13-0"
-    TORCH_INDEX_SUFFIX = "cu130"
-  }
-}
-
-target "cu130" {
-  inherits = ["common"]
   tags = [
-    "${DOCKER_REPO}:${TAG}",
+    "${REGISTRY}/${REGISTRY_USER}/${APP}:${RELEASE}-torch2.10-cu130-py312"
   ]
+
+  args = {
+    RELEASE = "${RELEASE}"
+
+    BASE_IMAGE = "nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04"
+
+    COMFYUI_VERSION = "${RELEASE}"
+    MANAGER_SHA = "${MANAGER_SHA}"
+
+    INDEX_URL = "https://download.pytorch.org/whl/cu130"
+    TORCH_VERSION = "2.10.0+cu130"
+    TORCHVISION_VERSION = "0.25.0+cu130"
+    TORCHAUDIO_VERSION = "2.10.0+cu130"
+    TRITON_VERSION = "3.6.0"
+
+    FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
+    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
+  }
+
   output = ["type=registry"]
 }
 
-target "dev" {
-  inherits = ["common"]
+target "dev-cu130-py312" {
+  context = "."
+  dockerfile = "Dockerfile"
+  platforms = ["linux/amd64"]
+
   tags = [
-    "${DOCKER_REPO}:dev-cu130"
+    "${REGISTRY}/${REGISTRY_USER}/${APP}:dev-${RELEASE}-torch2.10-cu130-py312"
   ]
+
+  args = {
+    RELEASE = "${RELEASE}"
+
+    BASE_IMAGE = "nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04"
+
+    COMFYUI_VERSION = "${RELEASE}"
+    MANAGER_SHA = "${MANAGER_SHA}"
+
+    INDEX_URL = "https://download.pytorch.org/whl/cu130"
+    TORCH_VERSION = "2.10.0+cu130"
+    TORCHVISION_VERSION = "0.25.0+cu130"
+    TORCHAUDIO_VERSION = "2.10.0+cu130"
+    TRITON_VERSION = "3.6.0"
+
+    FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
+    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
+  }
+
+  output = ["type=docker"]
+}
+
+# ---------------------------------------------------------------------------
+# ComfyUI v0.24.0
+# Python 3.12
+# Torch 2.10.0
+# CUDA 12.8 / cu128
+# Triton 3.6.0
+# No xformers
+# ---------------------------------------------------------------------------
+
+target "cu128-py312" {
+  context = "."
+  dockerfile = "Dockerfile"
+  platforms = ["linux/amd64"]
+
+  tags = [
+    "${REGISTRY}/${REGISTRY_USER}/${APP}:${RELEASE}-torch2.10-cu128-py312"
+  ]
+
+  args = {
+    RELEASE = "${RELEASE}"
+
+    BASE_IMAGE = "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+
+    COMFYUI_VERSION = "${RELEASE}"
+    MANAGER_SHA = "${MANAGER_SHA}"
+
+    INDEX_URL = "https://download.pytorch.org/whl/cu128"
+    TORCH_VERSION = "2.10.0+cu128"
+    TORCHVISION_VERSION = "0.25.0+cu128"
+    TORCHAUDIO_VERSION = "2.10.0+cu128"
+    TRITON_VERSION = "3.6.0"
+
+    FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
+    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
+  }
+
+  output = ["type=registry"]
+}
+
+target "dev-cu128-py312" {
+  context = "."
+  dockerfile = "Dockerfile"
+  platforms = ["linux/amd64"]
+
+  tags = [
+    "${REGISTRY}/${REGISTRY_USER}/${APP}:dev-${RELEASE}-torch2.10-cu128-py312"
+  ]
+
+  args = {
+    RELEASE = "${RELEASE}"
+
+    BASE_IMAGE = "nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04"
+
+    COMFYUI_VERSION = "${RELEASE}"
+    MANAGER_SHA = "${MANAGER_SHA}"
+
+    INDEX_URL = "https://download.pytorch.org/whl/cu128"
+    TORCH_VERSION = "2.10.0+cu128"
+    TORCHVISION_VERSION = "0.25.0+cu128"
+    TORCHAUDIO_VERSION = "2.10.0+cu128"
+    TRITON_VERSION = "3.6.0"
+
+    FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
+    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
+  }
+
   output = ["type=docker"]
 }
