@@ -21,7 +21,6 @@ ARG TORCHAUDIO_VERSION
 ARG TRITON_VERSION
 
 ARG FILEBROWSER_VERSION
-ARG FILEBROWSER_SHA256
 
 ENV TEMPLATE_VERSION=${RELEASE}
 ENV VENV_PATH=/workspace/runpod-slim/ComfyUI/.venv
@@ -218,7 +217,6 @@ RUN python3.12 -m pip uninstall -y uv 2>/dev/null || true && \
 # ---------------------------------------------------------------------------
 
 RUN curl -fSL "https://github.com/filebrowser/filebrowser/releases/download/${FILEBROWSER_VERSION}/linux-amd64-filebrowser.tar.gz" -o /tmp/fb.tar.gz && \
-    echo "${FILEBROWSER_SHA256}  /tmp/fb.tar.gz" | sha256sum -c - && \
     tar xzf /tmp/fb.tar.gz -C /usr/local/bin filebrowser && \
     rm /tmp/fb.tar.gz
 

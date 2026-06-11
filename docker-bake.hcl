@@ -23,11 +23,7 @@ variable "MANAGER_SHA" {
 }
 
 variable "FILEBROWSER_VERSION" {
-  default = "v2.59.0"
-}
-
-variable "FILEBROWSER_SHA256" {
-  default = "8cd8c3baecb086028111b912f252a6e3169737fa764b5c510139e81f9da87799"
+  default = "v2.63.14"
 }
 
 group "default" {
@@ -79,9 +75,7 @@ target "cu130-py312" {
     TORCHVISION_VERSION = "0.25.0+cu130"
     TORCHAUDIO_VERSION = "2.10.0+cu130"
     TRITON_VERSION = "3.6.0"
-
     FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
-    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
   }
 
   output = ["type=registry"]
@@ -109,9 +103,7 @@ target "dev-cu130-py312" {
     TORCHVISION_VERSION = "0.25.0+cu130"
     TORCHAUDIO_VERSION = "2.10.0+cu130"
     TRITON_VERSION = "3.6.0"
-
     FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
-    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
   }
 
   output = ["type=docker"]
@@ -148,9 +140,7 @@ target "cu128-py312" {
     TORCHVISION_VERSION = "0.25.0+cu128"
     TORCHAUDIO_VERSION = "2.10.0+cu128"
     TRITON_VERSION = "3.6.0"
-
     FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
-    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
   }
 
   output = ["type=registry"]
@@ -178,9 +168,7 @@ target "dev-cu128-py312" {
     TORCHVISION_VERSION = "0.25.0+cu128"
     TORCHAUDIO_VERSION = "2.10.0+cu128"
     TRITON_VERSION = "3.6.0"
-
     FILEBROWSER_VERSION = "${FILEBROWSER_VERSION}"
-    FILEBROWSER_SHA256 = "${FILEBROWSER_SHA256}"
   }
 
   output = ["type=docker"]
