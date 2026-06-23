@@ -11,7 +11,7 @@ variable "APP" {
 }
 
 variable "RELEASE" {
-  default = "v0.24.0"
+  default = "v0.26.0"
 }
 
 variable "RELEASE_SUFFIX" {
@@ -19,11 +19,11 @@ variable "RELEASE_SUFFIX" {
 }
 
 variable "MANAGER_SHA" {
-  default = "395bb2442798b804ae672a12eb5433bc10af0212"
+  default = "8ff2ba8ffe1b1f513932185c54cc50857c33f5ce"
 }
 
 variable "FILEBROWSER_VERSION" {
-  default = "v2.63.14"
+  default = "v2.63.15"
 }
 
 group "default" {
@@ -45,7 +45,6 @@ group "dev" {
 }
 
 # ---------------------------------------------------------------------------
-# ComfyUI v0.24.0
 # Python 3.12
 # Torch 2.10.0
 # CUDA 13.0 / cu130
@@ -110,7 +109,6 @@ target "dev-cu130-py312" {
 }
 
 # ---------------------------------------------------------------------------
-# ComfyUI v0.24.0
 # Python 3.12
 # Torch 2.10.0
 # CUDA 12.8 / cu128

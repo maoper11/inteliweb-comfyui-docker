@@ -6,6 +6,11 @@ ENV PYTHONUNBUFFERED=1
 ENV IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
 ENV FILEBROWSER_CONFIG=/workspace/.filebrowser.json
 
+# Make pip less noisy and more reliable during runtime custom-node installs.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV PIP_DEFAULT_TIMEOUT=120
+
 # ---------------------------------------------------------------------------
 # Build args from docker-bake.hcl
 # ---------------------------------------------------------------------------
@@ -131,18 +136,18 @@ RUN cd /tmp/build/ComfyUI && \
 
 WORKDIR /tmp/build
 
-RUN printf "torch==%s\n" "${TORCH_VERSION}" > /tmp/torch-constraints.txt && \
-    printf "torchvision==%s\n" "${TORCHVISION_VERSION}" >> /tmp/torch-constraints.txt && \
-    printf "torchaudio==%s\n" "${TORCHAUDIO_VERSION}" >> /tmp/torch-constraints.txt && \
-    printf "triton==%s\n" "${TRITON_VERSION}" >> /tmp/torch-constraints.txt && \
+RUN printf "torch==%s\n" "${TORCH_VERSION}" > /opt/torch-constraints.txt && \
+    printf "torchvision==%s\n" "${TORCHVISION_VERSION}" >> /opt/torch-constraints.txt && \
+    printf "torchaudio==%s\n" "${TORCHAUDIO_VERSION}" >> /opt/torch-constraints.txt && \
+    printf "triton==%s\n" "${TRITON_VERSION}" >> /opt/torch-constraints.txt && \
     python3.12 -m pip install --no-cache-dir \
         --extra-index-url "${INDEX_URL}" \
-        -c /tmp/torch-constraints.txt \
+        -c /opt/torch-constraints.txt \
         -r /tmp/build/ComfyUI/requirements.txt && \
     if [ -f /tmp/build/ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt ]; then \
         python3.12 -m pip install --no-cache-dir \
             --extra-index-url "${INDEX_URL}" \
-            -c /tmp/torch-constraints.txt \
+            -c /opt/torch-constraints.txt \
             -r /tmp/build/ComfyUI/custom_nodes/ComfyUI-Manager/requirements.txt; \
     fi && \
     python3.12 -m pip install --no-cache-dir \
@@ -150,7 +155,13 @@ RUN printf "torch==%s\n" "${TORCH_VERSION}" > /tmp/torch-constraints.txt && \
         opencv-python \
         jupyter \
         jupyter-resource-usage \
-        jupyterlab-nvdashboard
+        jupyterlab-nvdashboard && \
+    python3.12 -m pip --version && \
+    python3.12 -m pip list --format=freeze > /tmp/pip-freeze-build.txt
+
+# Keep Torch/Triton pinned during runtime custom-node installs.
+# This prevents ComfyUI-Manager from accidentally upgrading/downgrading the baked CUDA stack.
+ENV PIP_CONSTRAINT=/opt/torch-constraints.txt
 
 # ---------------------------------------------------------------------------
 # Informational version print only
@@ -191,6 +202,12 @@ except Exception as e:
 print("============================================================")
 PY
 
+# Validate package tooling used later by ComfyUI-Manager.
+# pip check is informational only because upstream packages may occasionally declare loose metadata.
+RUN python3.12 -m pip --version && \
+    python3.12 -m pip list --format=freeze > /tmp/pip-freeze-runtime-check.txt && \
+    python3.12 -m pip check || true
+
 # ---------------------------------------------------------------------------
 # Pre-populate ComfyUI-Manager cache
 # ---------------------------------------------------------------------------
@@ -206,7 +223,8 @@ RUN python3.12 /tmp/prebake-manager-cache.py /tmp/build/ComfyUI/user/__manager/c
 RUN cp -r /tmp/build/ComfyUI /opt/comfyui-baked
 
 # ---------------------------------------------------------------------------
-# Remove uv to force ComfyUI-Manager to use pip
+# Remove uv to match the official RunPod strategy and force ComfyUI-Manager to use pip.
+# uv can ignore --system-site-packages in this layout; pip is validated/warmed in start.sh.
 # ---------------------------------------------------------------------------
 
 RUN python3.12 -m pip uninstall -y uv 2>/dev/null || true && \
