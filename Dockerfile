@@ -3,6 +3,7 @@ FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PYTHON_BIN=python3.12
 ENV IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
 ENV FILEBROWSER_CONFIG=/workspace/.filebrowser.json
 
@@ -250,8 +251,13 @@ RUN mkdir -p /usr/local/etc/jupyter/jupyter_server_config.d && \
 # CUDA / NVIDIA runtime environment
 # ---------------------------------------------------------------------------
 
+# Keep CUDA_HOME/PATH for nvcc, headers, and custom-node compilation.
+# Do not put /usr/local/cuda/lib64 first at runtime: PyTorch wheels install
+# matching NVIDIA runtime libraries under site-packages/nvidia, and start.sh
+# prioritizes those libraries to avoid mixed libcublas/libcublasLt versions.
+ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64
+ENV LD_LIBRARY_PATH=/usr/local/cuda/extras/CUPTI/lib64
 
 ENV NVIDIA_REQUIRE_CUDA=""
 ENV NVIDIA_DISABLE_REQUIRE=true

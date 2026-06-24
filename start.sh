@@ -7,10 +7,109 @@ FILEBROWSER_CONFIG="/root/.config/filebrowser/config.json"
 DB_FILE="/workspace/filebrowser.db"
 ARGS_FILE="/workspace/comfyui_args.txt"
 CUDA_PREFLIGHT_LOG="/workspace/CUDA_PREFLIGHT.txt"
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 
 # ---------------------------------------------------------------------------- #
 #                          Function Definitions                                  #
 # ---------------------------------------------------------------------------- #
+
+# Prioritize CUDA runtime libraries shipped with the PyTorch/NVIDIA Python wheels.
+#
+# Why this is needed:
+# - PyTorch wheels install matching NVIDIA runtime libraries under site-packages/nvidia/.
+# - CUDA devel base images also install runtime libraries under /usr/local/cuda/lib64.
+# - If LD_LIBRARY_PATH loads libcublas from the wheel but libcublasLt from the system CUDA
+#   toolkit, simple torch matmul calls can fail with CUBLAS_STATUS_INVALID_VALUE.
+#
+# Keep /usr/local/cuda/bin in PATH for nvcc/headers/compilation, but prefer wheel libraries
+# at runtime for torch, ComfyUI, and custom nodes.
+configure_torch_cuda_runtime_libs() {
+    echo "Configuring PyTorch CUDA runtime library priority..."
+
+    local pybin="${PYTHON_BIN:-python3.12}"
+    if ! command -v "$pybin" >/dev/null 2>&1; then
+        if command -v python3 >/dev/null 2>&1; then
+            pybin="python3"
+        elif command -v python >/dev/null 2>&1; then
+            pybin="python"
+        else
+            echo "WARNING: No Python interpreter found while configuring CUDA runtime libraries."
+            return 0
+        fi
+    fi
+
+    local torch_cuda_libs=""
+    torch_cuda_libs="$($pybin - <<'PY' 2>/dev/null || true
+import site
+import sys
+from pathlib import Path
+
+roots = []
+for item in site.getsitepackages() + [site.getusersitepackages()] + sys.path:
+    if not item:
+        continue
+    try:
+        p = Path(item)
+    except TypeError:
+        continue
+    if p.exists() and p not in roots:
+        roots.append(p)
+
+# Prefer a stable, explicit order for the common NVIDIA wheel layouts.
+# CUDA 13+ wheels commonly use nvidia/cu13/lib for most runtime libs.
+# CUDA 12 wheels commonly use separate package directories such as nvidia/cublas/lib.
+preferred_names = [
+    "cu13", "cu14", "cu12", "cu11",
+    "cublas", "cuda_runtime", "cuda_nvrtc", "cuda_cupti",
+    "cudnn", "cufft", "cufile", "curand", "cusolver", "cusparse",
+    "cusparselt", "nccl", "nvjitlink", "nvshmem", "nvtx",
+]
+
+found = []
+seen = set()
+
+def add_dir(path: Path):
+    if not path.is_dir():
+        return
+    if not any(path.glob("*.so*")):
+        return
+    s = str(path)
+    if s not in seen:
+        seen.add(s)
+        found.append(s)
+
+for root in roots:
+    nvidia_root = root / "nvidia"
+    if not nvidia_root.exists():
+        continue
+
+    for name in preferred_names:
+        add_dir(nvidia_root / name / "lib")
+
+    # Future-proof fallback for new NVIDIA wheel package names.
+    for d in sorted(nvidia_root.glob("*/lib")):
+        add_dir(d)
+
+print(":".join(found))
+PY
+)"
+
+    local cupti_dir="/usr/local/cuda/extras/CUPTI/lib64"
+
+    if [ -n "$torch_cuda_libs" ]; then
+        if [ -d "$cupti_dir" ]; then
+            export LD_LIBRARY_PATH="$torch_cuda_libs:$cupti_dir"
+        else
+            export LD_LIBRARY_PATH="$torch_cuda_libs"
+        fi
+
+        echo "Using PyTorch/NVIDIA wheel CUDA libraries first."
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+    else
+        echo "WARNING: No NVIDIA Python wheel CUDA libraries were found."
+        echo "Leaving LD_LIBRARY_PATH unchanged: ${LD_LIBRARY_PATH:-}"
+    fi
+}
 
 # Setup SSH with optional key or random password
 setup_ssh() {
@@ -174,6 +273,7 @@ import sys
 
 print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("NVIDIA_VISIBLE_DEVICES:", os.environ.get("NVIDIA_VISIBLE_DEVICES"))
+print("LD_LIBRARY_PATH:", os.environ.get("LD_LIBRARY_PATH"))
 
 try:
     libcuda = ctypes.CDLL("libcuda.so.1")
@@ -190,12 +290,13 @@ except Exception as e:
 
 if rc != 0:
     print("CUDA_PREFLIGHT_FAILED: CUDA driver initialization failed before PyTorch.")
-    print("This usually means the RunPod host/GPU is defective or incorrectly exposed to the container.")
+    print("This usually means the host/GPU is defective or incorrectly exposed to the container.")
     sys.exit(43)
 
 try:
     import torch
     print("torch:", torch.__version__)
+    print("torch file:", getattr(torch, "__file__", None))
     print("torch.version.cuda:", torch.version.cuda)
     available = torch.cuda.is_available()
     print("torch.cuda.is_available():", available)
@@ -206,8 +307,29 @@ try:
         sys.exit(44)
 
     print("GPU:", torch.cuda.get_device_name(0))
+    print("CUDA capability:", torch.cuda.get_device_capability(0))
+    print("cuDNN:", torch.backends.cudnn.version())
+
+    # Real CUDA/cuBLAS smoke test. This catches broken or mixed CUDA runtime libraries
+    # that simple torch.cuda.is_available() does not detect.
+    dtypes = [torch.float32, torch.float16]
+    try:
+        if torch.cuda.is_bf16_supported():
+            dtypes.append(torch.bfloat16)
+    except Exception as e:
+        print("BF16 support check warning:", repr(e))
+
+    for dtype in dtypes:
+        print("Testing CUDA matmul:", dtype)
+        a = torch.randn((128, 128), device="cuda", dtype=dtype)
+        y = a @ a
+        torch.cuda.synchronize()
+        print("CUDA matmul OK:", dtype)
+
 except Exception as e:
-    print("CUDA_PREFLIGHT_FAILED: PyTorch CUDA check failed:", repr(e))
+    print("CUDA_PREFLIGHT_FAILED: PyTorch CUDA/cuBLAS check failed:", repr(e))
+    print("This may be caused by mixed CUDA runtime libraries in LD_LIBRARY_PATH.")
+    print("PyTorch should normally load NVIDIA wheel libraries before /usr/local/cuda/lib64.")
     sys.exit(45)
 
 print("CUDA preflight OK.")
@@ -232,12 +354,13 @@ show_cuda_error_page() {
 </head>
 <body>
   <div class="box">
-    <h1>ComfyUI did not start because CUDA failed</h1>
-    <p>The container started, but the GPU could not be initialized by CUDA.</p>
-    <p>This usually means the RunPod host/GPU is defective or incorrectly exposed to the container.</p>
+    <h1>ComfyUI did not start because CUDA/cuBLAS failed</h1>
+    <p>The container started, but the CUDA preflight did not pass.</p>
+    <p>This usually means the host/GPU is defective, incorrectly exposed to the container, or CUDA runtime libraries are mixed incorrectly.</p>
     <p>Common diagnostics:</p>
     <pre>cuInit(0): 999
-torch.cuda.is_available(): False</pre>
+torch.cuda.is_available(): False
+CUBLAS_STATUS_INVALID_VALUE</pre>
     <p>Diagnostics were saved to <code>/workspace/CUDA_PREFLIGHT.txt</code>.</p>
     <p>SSH, JupyterLab, and FileBrowser are still available.</p>
     <p>Recommended action: stop this pod and try another GPU/host.</p>
@@ -247,7 +370,7 @@ torch.cuda.is_available(): False</pre>
 HTML
 
     echo "Starting CUDA error page on port 8188..."
-    nohup python3.12 -m http.server 8188 --bind 0.0.0.0 --directory /workspace/cuda-error > /cuda-error-page.log 2>&1 &
+    nohup "${PYTHON_BIN:-python3.12}" -m http.server 8188 --bind 0.0.0.0 --directory /workspace/cuda-error > /cuda-error-page.log 2>&1 &
 }
 
 handle_cuda_preflight() {
@@ -261,14 +384,15 @@ handle_cuda_preflight() {
     if [ "$status" -ne 0 ]; then
         echo "============================================="
         echo "  CUDA PREFLIGHT FAILED"
-        echo "  ComfyUI was not started because CUDA cannot initialize."
+        echo "  ComfyUI was not started because CUDA/cuBLAS failed."
         echo ""
-        echo "  Common bad result:"
+        echo "  Common bad results:"
         echo "    cuInit(0): 999"
         echo "    torch.cuda.is_available(): False"
+        echo "    CUBLAS_STATUS_INVALID_VALUE"
         echo ""
-        echo "  This is usually a RunPod host/GPU problem, not a ComfyUI problem."
-        echo "  Try another GPU/host."
+        echo "  This is usually a host/GPU exposure problem or a mixed CUDA runtime library problem."
+        echo "  Check LD_LIBRARY_PATH and try another GPU/host if cuInit fails."
         echo ""
         echo "  SSH, JupyterLab and FileBrowser remain available."
         echo "  Diagnostics saved to: $CUDA_PREFLIGHT_LOG"
@@ -284,6 +408,7 @@ handle_cuda_preflight() {
 #                               Main Program                                     #
 # ---------------------------------------------------------------------------- #
 
+configure_torch_cuda_runtime_libs
 setup_ssh
 export_env_vars
 
@@ -325,7 +450,7 @@ if [ ! -d "$COMFYUI_DIR" ] || [ ! -d "$VENV_DIR" ]; then
     # Create venv with access to system packages (torch, numpy, etc. pre-installed in image)
     if [ ! -d "$VENV_DIR" ]; then
         cd "$COMFYUI_DIR"
-        python3.12 -m venv --system-site-packages "$VENV_DIR"
+        "${PYTHON_BIN:-python3.12}" -m venv --system-site-packages "$VENV_DIR"
         source "$VENV_DIR/bin/activate"
 
         # Ensure pip is available in the venv (needed for ComfyUI-Manager)
