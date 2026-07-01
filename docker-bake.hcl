@@ -11,7 +11,7 @@ variable "APP" {
 }
 
 variable "RELEASE" {
-  default = "v0.26.0"
+  default = "v0.27.0"
 }
 
 variable "RELEASE_SUFFIX" {
@@ -19,7 +19,7 @@ variable "RELEASE_SUFFIX" {
 }
 
 variable "MANAGER_SHA" {
-  default = "8ff2ba8ffe1b1f513932185c54cc50857c33f5ce"
+  default = "c4d775079b40941091e44d4211817ebc21b2c0cd"
 }
 
 variable "FILEBROWSER_VERSION" {
