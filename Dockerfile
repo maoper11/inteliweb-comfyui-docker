@@ -63,6 +63,13 @@ RUN apt-get update && \
         unzip \
         rsync \
         jq \
+        libegl1 \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libgomp1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /usr/lib/python3.12/EXTERNALLY-MANAGED
