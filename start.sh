@@ -253,8 +253,16 @@ patch_manager_pip_timeout() {
     fi
 }
 
-# Lightweight CUDA preflight. It is intentionally passive: it does not install packages,
-# modify Torch, or change CUDA variables. It only detects broken GPU/driver exposure early.
+# CUDA preflight with staged diagnostics.
+#
+# The checks are intentionally ordered so the log can distinguish:
+#   41: NVIDIA driver library cannot be loaded
+#   42: CUDA Driver API call itself raised an exception
+#   43: cuInit() failed before PyTorch (host / driver / GPU runtime problem)
+#   44: CUDA Driver API initialized, but PyTorch cannot use CUDA
+#   45: PyTorch sees CUDA, but a real CUDA/cuBLAS operation failed
+#
+# The preflight is passive: it does not install packages, modify Torch, or repair the host.
 cuda_preflight() {
     if [ "${SKIP_CUDA_PREFLIGHT:-0}" = "1" ]; then
         echo "SKIP_CUDA_PREFLIGHT=1 set — skipping CUDA preflight."
@@ -269,49 +277,136 @@ cuda_preflight() {
     python - <<'PY'
 import ctypes
 import os
+import subprocess
 import sys
+from pathlib import Path
 
+
+def safe_env(name, default="unknown"):
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+def run_text(cmd):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+        out = (p.stdout or "").strip()
+        err = (p.stderr or "").strip()
+        if out and err:
+            return f"{out}\n{err}"
+        return out or err or f"(exit {p.returncode}, no output)"
+    except Exception as e:
+        return f"unavailable: {e!r}"
+
+
+def cuda_error(libcuda, rc):
+    try:
+        name_ptr = ctypes.c_char_p()
+        desc_ptr = ctypes.c_char_p()
+        libcuda.cuGetErrorName.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+        libcuda.cuGetErrorString.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+        libcuda.cuGetErrorName(rc, ctypes.byref(name_ptr))
+        libcuda.cuGetErrorString(rc, ctypes.byref(desc_ptr))
+        name = name_ptr.value.decode(errors="replace") if name_ptr.value else "unknown"
+        desc = desc_ptr.value.decode(errors="replace") if desc_ptr.value else "unknown error"
+        return name, desc
+    except Exception:
+        return "unknown", "unknown error"
+
+
+print("============================================================")
+print("Inteliweb AI - CUDA Preflight Diagnostics")
+print("============================================================")
+print("Stage: platform / host information")
+print("Pod ID:", safe_env("RUNPOD_POD_ID"))
+print("Pod hostname:", safe_env("RUNPOD_POD_HOSTNAME"))
+print("RunPod GPU:", safe_env("RUNPOD_GPU_NAME"))
+print("RunPod GPU count:", safe_env("RUNPOD_GPU_COUNT"))
+print("RunPod RAM (GB):", safe_env("RUNPOD_MEM_GB"))
+print("RunPod CPU count:", safe_env("RUNPOD_CPU_COUNT"))
+print("RunPod cloud type:", safe_env("RUNPOD_CLOUD_TYPE"))
+print("CUDA toolkit env:", safe_env("CUDA_VERSION"))
+print("CUDA_HOME:", safe_env("CUDA_HOME"))
 print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("NVIDIA_VISIBLE_DEVICES:", os.environ.get("NVIDIA_VISIBLE_DEVICES"))
 print("LD_LIBRARY_PATH:", os.environ.get("LD_LIBRARY_PATH"))
+print()
 
+print("Stage: NVIDIA host visibility")
+print("nvidia-smi query:")
+print(run_text([
+    "nvidia-smi",
+    "--query-gpu=index,uuid,pci.bus_id,driver_version,name,memory.total",
+    "--format=csv,noheader",
+]))
+print("NVIDIA device nodes:")
+try:
+    nodes = sorted(str(p) for p in Path("/dev").glob("nvidia*"))
+    print(" ".join(nodes) if nodes else "none")
+except Exception as e:
+    print("unavailable:", repr(e))
+print()
+
+print("Stage: CUDA Driver API")
 try:
     libcuda = ctypes.CDLL("libcuda.so.1")
+    print("libcuda.so.1: loaded")
 except Exception as e:
+    print("CUDA_PREFLIGHT_FAILED_STAGE: DRIVER_LIBRARY")
     print("CUDA_PREFLIGHT_FAILED: libcuda.so.1 not available:", repr(e))
     sys.exit(41)
 
 try:
+    libcuda.cuInit.argtypes = [ctypes.c_uint]
+    libcuda.cuInit.restype = ctypes.c_int
     rc = libcuda.cuInit(0)
+    name, desc = cuda_error(libcuda, rc) if rc != 0 else ("CUDA_SUCCESS", "success")
     print("cuInit(0):", rc)
+    print("cuInit name:", name)
+    print("cuInit description:", desc)
 except Exception as e:
+    print("CUDA_PREFLIGHT_FAILED_STAGE: CUDA_DRIVER_API")
     print("CUDA_PREFLIGHT_FAILED: cuInit exception:", repr(e))
     sys.exit(42)
 
 if rc != 0:
-    print("CUDA_PREFLIGHT_FAILED: CUDA driver initialization failed before PyTorch.")
-    print("This usually means the host/GPU is defective or incorrectly exposed to the container.")
+    print("CUDA_PREFLIGHT_FAILED_STAGE: CUDA_DRIVER_INIT")
+    print("CUDA_PREFLIGHT_FAILED: CUDA Driver API initialization failed before PyTorch was imported.")
+    print("Interpretation: the GPU may still appear in nvidia-smi, but CUDA compute cannot initialize it.")
+    print("Most likely area: host GPU state, NVIDIA driver, device injection/runtime, or host configuration.")
+    print("Recommended action: terminate this Pod and deploy another GPU/host. If it repeats, report the Pod ID, GPU UUID and driver version to the provider.")
     sys.exit(43)
 
+print()
+print("Stage: PyTorch CUDA")
 try:
     import torch
     print("torch:", torch.__version__)
     print("torch file:", getattr(torch, "__file__", None))
     print("torch.version.cuda:", torch.version.cuda)
     available = torch.cuda.is_available()
+    count = torch.cuda.device_count()
     print("torch.cuda.is_available():", available)
-    print("torch.cuda.device_count():", torch.cuda.device_count())
+    print("torch.cuda.device_count():", count)
 
     if not available:
-        print("CUDA_PREFLIGHT_FAILED: torch.cuda.is_available() returned False.")
+        print("CUDA_PREFLIGHT_FAILED_STAGE: PYTORCH_CUDA")
+        print("CUDA_PREFLIGHT_FAILED: CUDA Driver API initialized, but torch.cuda.is_available() returned False.")
         sys.exit(44)
 
     print("GPU:", torch.cuda.get_device_name(0))
     print("CUDA capability:", torch.cuda.get_device_capability(0))
     print("cuDNN:", torch.backends.cudnn.version())
+except SystemExit:
+    raise
+except Exception as e:
+    print("CUDA_PREFLIGHT_FAILED_STAGE: PYTORCH_CUDA")
+    print("CUDA_PREFLIGHT_FAILED: PyTorch CUDA initialization failed:", repr(e))
+    sys.exit(44)
 
-    # Real CUDA/cuBLAS smoke test. This catches broken or mixed CUDA runtime libraries
-    # that simple torch.cuda.is_available() does not detect.
+print()
+print("Stage: real CUDA/cuBLAS smoke test")
+try:
     dtypes = [torch.float32, torch.float16]
     try:
         if torch.cuda.is_bf16_supported():
@@ -327,47 +422,227 @@ try:
         print("CUDA matmul OK:", dtype)
 
 except Exception as e:
-    print("CUDA_PREFLIGHT_FAILED: PyTorch CUDA/cuBLAS check failed:", repr(e))
-    print("This may be caused by mixed CUDA runtime libraries in LD_LIBRARY_PATH.")
-    print("PyTorch should normally load NVIDIA wheel libraries before /usr/local/cuda/lib64.")
+    print("CUDA_PREFLIGHT_FAILED_STAGE: CUDA_RUNTIME")
+    print("CUDA_PREFLIGHT_FAILED: PyTorch can see CUDA, but a real CUDA/cuBLAS operation failed:", repr(e))
+    print("Interpretation: inspect CUDA runtime libraries and LD_LIBRARY_PATH before blaming the host.")
     sys.exit(45)
 
+print()
+print("CUDA_PREFLIGHT_STAGE: OK")
 print("CUDA preflight OK.")
+print("============================================================")
 PY
 }
 
 show_cuda_error_page() {
+    local failure_code="$1"
     mkdir -p /workspace/cuda-error
 
-    cat > /workspace/cuda-error/index.html <<'HTML'
-<!doctype html>
-<html>
+    CUDA_FAILURE_CODE="$failure_code" CUDA_PREFLIGHT_LOG="$CUDA_PREFLIGHT_LOG" \
+    "${PYTHON_BIN:-python3.12}" - <<'PY'
+import html
+import os
+import re
+from pathlib import Path
+
+failure_code = int(os.environ.get("CUDA_FAILURE_CODE", "1"))
+log_path = Path(os.environ.get("CUDA_PREFLIGHT_LOG", "/workspace/CUDA_PREFLIGHT.txt"))
+try:
+    diagnostics = log_path.read_text(errors="replace")
+except Exception as e:
+    diagnostics = f"Unable to read diagnostics: {e!r}"
+
+# Defense in depth: redact common credential/token patterns if they ever appear in the log.
+diagnostics = re.sub(
+    r"(?im)^((?:RUNPOD_)?(?:API_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*).+$",
+    r"\1[REDACTED]",
+    diagnostics,
+)
+
+profiles = {
+    41: {
+        "title": "NVIDIA driver library is unavailable",
+        "category": "Driver library / container runtime",
+        "summary": "The container could not load libcuda.so.1, so CUDA cannot reach the NVIDIA driver.",
+        "action": "Stop this Pod and deploy another host. If the problem repeats, report the Pod ID and diagnostics to your GPU provider.",
+        "host_likely": True,
+    },
+    42: {
+        "title": "CUDA Driver API could not be called",
+        "category": "CUDA Driver API",
+        "summary": "The CUDA driver call failed before PyTorch and ComfyUI were loaded.",
+        "action": "Stop this Pod and try another GPU/host. If it repeats across hosts, review the container runtime and driver integration.",
+        "host_likely": True,
+    },
+    43: {
+        "title": "GPU detected, but CUDA compute cannot initialize",
+        "category": "Host / NVIDIA driver / GPU runtime",
+        "summary": "The GPU may be visible in nvidia-smi, but cuInit() failed before PyTorch was imported. ComfyUI was intentionally not started on this unhealthy CUDA host.",
+        "action": "Terminate this Pod and deploy another GPU/host. If the same failure repeats, send the Pod ID, GPU UUID and driver version from the diagnostics to your provider.",
+        "host_likely": True,
+    },
+    44: {
+        "title": "PyTorch cannot initialize CUDA",
+        "category": "PyTorch / CUDA integration",
+        "summary": "The CUDA Driver API initialized successfully, but PyTorch could not use the GPU.",
+        "action": "Review the PyTorch/CUDA build and container runtime. Trying another host can help distinguish a host issue from an image compatibility issue.",
+        "host_likely": False,
+    },
+    45: {
+        "title": "CUDA runtime smoke test failed",
+        "category": "CUDA runtime / cuBLAS libraries",
+        "summary": "PyTorch detected the GPU, but a real CUDA matrix operation failed. This commonly points to runtime library conflicts or an unhealthy GPU runtime.",
+        "action": "Inspect LD_LIBRARY_PATH and CUDA runtime libraries. If the same image works on another host, report this host to the provider.",
+        "host_likely": False,
+    },
+}
+
+p = profiles.get(failure_code, {
+    "title": "CUDA preflight failed",
+    "category": "GPU / CUDA",
+    "summary": "The container started, but the GPU health check did not pass.",
+    "action": "Review the diagnostics below and try another GPU/host.",
+    "host_likely": False,
+})
+
+# Pull a few safe fields from the diagnostic log for the summary cards.
+def field(label):
+    m = re.search(rf"(?m)^{re.escape(label)}:\s*(.+)$", diagnostics)
+    return m.group(1).strip() if m else "unknown"
+
+pod_id = field("Pod ID")
+gpu = field("RunPod GPU").replace("+", " ")
+if gpu == "unknown":
+    m = re.search(r"(?m)^\d+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*([^,]+),", diagnostics)
+    if m:
+        gpu = m.group(1).strip()
+
+driver = "unknown"
+gpu_uuid = "unknown"
+m = re.search(r"(?m)^\d+,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^\n]+)$", diagnostics)
+if m:
+    gpu_uuid = m.group(1).strip()
+    driver = m.group(3).strip()
+
+cuda_version = field("CUDA toolkit env")
+
+host_note = (
+    "This failure happened before PyTorch and ComfyUI were loaded, so your workflow and models are not the cause of this specific failure."
+    if p["host_likely"]
+    else
+    "The preflight stopped ComfyUI early to avoid a misleading crash later in the workflow."
+)
+
+cards = [
+    ("Pod ID", pod_id),
+    ("GPU", gpu),
+    ("GPU UUID", gpu_uuid),
+    ("Driver", driver),
+    ("CUDA toolkit", cuda_version),
+    ("Failure code", str(failure_code)),
+]
+
+card_html = "".join(
+    f'<div class="card"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
+    for label, value in cards
+)
+
+page = f'''<!doctype html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>CUDA / GPU initialization failed</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{html.escape(p["title"])}</title>
   <style>
-    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 40px auto; line-height: 1.5; padding: 0 20px; }
-    code, pre { background: #f3f3f3; padding: 3px 6px; border-radius: 4px; }
-    .box { border: 1px solid #ddd; padding: 22px; border-radius: 12px; }
-    h1 { margin-top: 0; }
+    :root {{ color-scheme: dark; }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1d2945 0, #0b1020 42%, #070a12 100%);
+      color: #eef2ff;
+    }}
+    main {{ max-width: 1040px; margin: 0 auto; padding: 52px 24px 72px; }}
+    .hero {{
+      background: rgba(16, 23, 42, .86);
+      border: 1px solid rgba(148, 163, 184, .22);
+      border-radius: 22px;
+      padding: 32px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.35);
+    }}
+    .badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(239, 68, 68, .12);
+      border: 1px solid rgba(248, 113, 113, .35);
+      color: #fecaca;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }}
+    h1 {{ margin: 18px 0 10px; font-size: clamp(30px, 5vw, 48px); line-height: 1.06; }}
+    .lead {{ margin: 0; color: #cbd5e1; font-size: 18px; line-height: 1.65; max-width: 850px; }}
+    .category {{ margin-top: 18px; color: #93c5fd; font-weight: 700; }}
+    .grid {{ display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin-top: 26px; }}
+    .card {{ background: rgba(15,23,42,.7); border: 1px solid rgba(148,163,184,.18); border-radius: 14px; padding: 15px; min-width: 0; }}
+    .card span {{ display:block; color:#94a3b8; font-size:12px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:7px; }}
+    .card strong {{ display:block; color:#f8fafc; font-size:14px; word-break:break-word; }}
+    .section {{ margin-top: 18px; background: rgba(15,23,42,.62); border:1px solid rgba(148,163,184,.17); border-radius:18px; padding:22px; }}
+    .section h2 {{ margin:0 0 10px; font-size:18px; }}
+    .section p {{ color:#cbd5e1; line-height:1.65; margin:7px 0; }}
+    .action {{ border-color: rgba(96,165,250,.35); background: rgba(30,64,175,.12); }}
+    ol {{ color:#dbeafe; line-height:1.75; padding-left:22px; }}
+    code {{ background:#111827; border:1px solid #334155; border-radius:6px; padding:2px 6px; }}
+    details {{ margin-top:18px; background:rgba(2,6,23,.82); border:1px solid rgba(148,163,184,.17); border-radius:16px; overflow:hidden; }}
+    summary {{ cursor:pointer; padding:17px 20px; font-weight:700; color:#cbd5e1; }}
+    pre {{ margin:0; padding:20px; overflow:auto; border-top:1px solid rgba(148,163,184,.13); color:#cbd5e1; background:#050812; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+    .footer {{ margin-top:18px; color:#64748b; font-size:13px; text-align:center; }}
+    @media (max-width: 760px) {{ .grid {{ grid-template-columns: 1fr; }} .hero {{ padding:24px; }} main {{ padding:28px 14px 48px; }} }}
   </style>
 </head>
 <body>
-  <div class="box">
-    <h1>ComfyUI did not start because CUDA/cuBLAS failed</h1>
-    <p>The container started, but the CUDA preflight did not pass.</p>
-    <p>This usually means the host/GPU is defective, incorrectly exposed to the container, or CUDA runtime libraries are mixed incorrectly.</p>
-    <p>Common diagnostics:</p>
-    <pre>cuInit(0): 999
-torch.cuda.is_available(): False
-CUBLAS_STATUS_INVALID_VALUE</pre>
-    <p>Diagnostics were saved to <code>/workspace/CUDA_PREFLIGHT.txt</code>.</p>
-    <p>SSH, JupyterLab, and FileBrowser are still available.</p>
-    <p>Recommended action: stop this pod and try another GPU/host.</p>
-  </div>
+<main>
+  <section class="hero">
+    <div class="badge">⚠ CUDA PREFLIGHT FAILED</div>
+    <h1>{html.escape(p["title"])}</h1>
+    <p class="lead">{html.escape(p["summary"])}</p>
+    <div class="category">Detected area: {html.escape(p["category"])}</div>
+    <div class="grid">{card_html}</div>
+  </section>
+
+  <section class="section action">
+    <h2>Recommended action</h2>
+    <p>{html.escape(p["action"])}</p>
+    <ol>
+      <li>Keep this Pod only if you need the diagnostics; SSH, JupyterLab and FileBrowser remain available.</li>
+      <li>For a <code>cuInit()</code> / driver failure, terminate the Pod and deploy another GPU host.</li>
+      <li>If the problem repeats, send the Pod ID, GPU UUID, NVIDIA driver version and <code>CUDA_PREFLIGHT.txt</code> to the infrastructure provider.</li>
+    </ol>
+  </section>
+
+  <section class="section">
+    <h2>What this means</h2>
+    <p>{html.escape(host_note)}</p>
+    <p>The preflight intentionally prevents ComfyUI from starting when CUDA is unhealthy, avoiding later errors that are harder to diagnose.</p>
+  </section>
+
+  <details>
+    <summary>Advanced diagnostics — /workspace/CUDA_PREFLIGHT.txt</summary>
+    <pre>{html.escape(diagnostics)}</pre>
+  </details>
+
+  <div class="footer">Inteliweb AI · ComfyUI CUDA preflight protection</div>
+</main>
 </body>
-</html>
-HTML
+</html>'''
+
+out = Path("/workspace/cuda-error/index.html")
+out.write_text(page, encoding="utf-8")
+PY
 
     echo "Starting CUDA error page on port 8188..."
     nohup "${PYTHON_BIN:-python3.12}" -m http.server 8188 --bind 0.0.0.0 --directory /workspace/cuda-error > /cuda-error-page.log 2>&1 &
@@ -382,24 +657,52 @@ handle_cuda_preflight() {
     cat "$CUDA_PREFLIGHT_LOG" || true
 
     if [ "$status" -ne 0 ]; then
-        echo "============================================="
-        echo "  CUDA PREFLIGHT FAILED"
-        echo "  ComfyUI was not started because CUDA/cuBLAS failed."
+        echo "============================================================"
+        echo "  CUDA PREFLIGHT FAILED (code $status)"
+
+        case "$status" in
+            41)
+                echo "  Stage: NVIDIA driver library"
+                echo "  libcuda.so.1 could not be loaded."
+                ;;
+            42)
+                echo "  Stage: CUDA Driver API"
+                echo "  cuInit() could not be called successfully."
+                ;;
+            43)
+                echo "  Stage: CUDA driver initialization"
+                echo "  cuInit() failed BEFORE PyTorch and ComfyUI were loaded."
+                echo "  This strongly points to the host / NVIDIA driver / GPU runtime layer."
+                ;;
+            44)
+                echo "  Stage: PyTorch CUDA initialization"
+                echo "  The CUDA Driver API initialized, but PyTorch could not use CUDA."
+                ;;
+            45)
+                echo "  Stage: CUDA runtime / cuBLAS smoke test"
+                echo "  PyTorch detected CUDA, but a real GPU operation failed."
+                ;;
+            *)
+                echo "  Stage: unknown CUDA preflight failure"
+                ;;
+        esac
+
         echo ""
-        echo "  Common bad results:"
-        echo "    cuInit(0): 999"
-        echo "    torch.cuda.is_available(): False"
-        echo "    CUBLAS_STATUS_INVALID_VALUE"
-        echo ""
-        echo "  This is usually a host/GPU exposure problem or a mixed CUDA runtime library problem."
-        echo "  Check LD_LIBRARY_PATH and try another GPU/host if cuInit fails."
-        echo ""
+        echo "  ComfyUI was not started to prevent a misleading downstream crash."
+        echo "  Diagnostics: $CUDA_PREFLIGHT_LOG"
         echo "  SSH, JupyterLab and FileBrowser remain available."
-        echo "  Diagnostics saved to: $CUDA_PREFLIGHT_LOG"
         echo ""
-        echo "  To bypass this check: set SKIP_CUDA_PREFLIGHT=1"
-        echo "============================================="
-        show_cuda_error_page
+        if [ "$status" = "43" ]; then
+            echo "  Recommended action: terminate this Pod and deploy another GPU/host."
+            echo "  If it repeats, report the Pod ID, GPU UUID and driver version shown above."
+        else
+            echo "  Recommended action: review the diagnostics above before changing the ComfyUI workflow."
+        fi
+        echo ""
+        echo "  To bypass this protection for debugging only: SKIP_CUDA_PREFLIGHT=1"
+        echo "============================================================"
+
+        show_cuda_error_page "$status"
         sleep infinity
     fi
 }
