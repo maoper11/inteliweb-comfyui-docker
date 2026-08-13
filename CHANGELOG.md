@@ -34,6 +34,10 @@ On each release (e.g. `2.0.0`):
 
 ### Added
 
+- Staged CUDA preflight diagnostics that distinguish driver-library, CUDA Driver API, PyTorch CUDA, and real CUDA/cuBLAS failures with dedicated exit codes.
+- Safe RunPod/GPU diagnostic capture in `/workspace/CUDA_PREFLIGHT.txt`, including Pod ID, GPU UUID, PCI bus, NVIDIA driver, CUDA toolkit, RAM, CPU and device nodes without exposing API keys or secrets.
+- A redesigned CUDA failure page on port 8188 with failure-specific explanations, recommended actions, host/GPU summary cards, and expandable advanced diagnostics.
+- Explicit guidance for `cuInit()` failures that occur before PyTorch/ComfyUI: redeploy on another host and report Pod ID, GPU UUID and driver version if the problem repeats.
 - Centralized version pinning in `docker-bake.hcl` (single source of truth for ComfyUI, custom node SHAs, PyTorch, FileBrowser).
 - Hash-verified dependency lock file generated at build time via `pip-compile --generate-hashes`.
 - `scripts/fetch-hashes.sh` to query GitHub API for latest custom node commit SHAs.
