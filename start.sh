@@ -277,6 +277,7 @@ cuda_preflight() {
     python - <<'PY'
 import ctypes
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -314,6 +315,11 @@ def cuda_error(libcuda, rc):
         return "unknown", "unknown error"
 
 
+container_cuda = safe_env("CUDA_VERSION")
+nvidia_smi_full = run_text(["nvidia-smi"])
+host_cuda_match = re.search(r"CUDA Version:\s*([0-9]+(?:\.[0-9]+)*)", nvidia_smi_full)
+host_driver_cuda = host_cuda_match.group(1) if host_cuda_match else "unknown"
+
 print("============================================================")
 print("Inteliweb AI - CUDA Preflight Diagnostics")
 print("============================================================")
@@ -324,8 +330,10 @@ print("RunPod GPU:", safe_env("RUNPOD_GPU_NAME"))
 print("RunPod GPU count:", safe_env("RUNPOD_GPU_COUNT"))
 print("RunPod RAM (GB):", safe_env("RUNPOD_MEM_GB"))
 print("RunPod CPU count:", safe_env("RUNPOD_CPU_COUNT"))
-print("RunPod cloud type:", safe_env("RUNPOD_CLOUD_TYPE"))
-print("CUDA toolkit env:", safe_env("CUDA_VERSION"))
+print("RunPod cloud type:", safe_env("RUNPOD_CLOUD_TYPE", "not provided by RunPod"))
+print("Container CUDA toolkit:", container_cuda)
+print("Host driver CUDA support (nvidia-smi):", host_driver_cuda)
+print("CUDA version relationship: container", container_cuda, "/ driver supports", host_driver_cuda)
 print("CUDA_HOME:", safe_env("CUDA_HOME"))
 print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("NVIDIA_VISIBLE_DEVICES:", os.environ.get("NVIDIA_VISIBLE_DEVICES"))
@@ -505,7 +513,7 @@ p = profiles.get(failure_code, {
     "host_likely": False,
 })
 
-# Pull a few safe fields from the diagnostic log for the summary cards.
+# Pull safe fields from the diagnostic log for the summary cards.
 def field(label):
     m = re.search(rf"(?m)^{re.escape(label)}:\s*(.+)$", diagnostics)
     return m.group(1).strip() if m else "unknown"
@@ -524,7 +532,19 @@ if m:
     gpu_uuid = m.group(1).strip()
     driver = m.group(3).strip()
 
-cuda_version = field("CUDA toolkit env")
+container_cuda = field("Container CUDA toolkit")
+if container_cuda == "unknown":
+    container_cuda = field("CUDA toolkit env")
+
+driver_cuda = field("Host driver CUDA support (nvidia-smi)")
+cuinit_code = field("cuInit(0)")
+cuinit_name = field("cuInit name")
+if cuinit_code != "unknown" and cuinit_name != "unknown":
+    cuinit_display = f"{cuinit_code} — {cuinit_name}"
+elif cuinit_code != "unknown":
+    cuinit_display = cuinit_code
+else:
+    cuinit_display = "unknown"
 
 host_note = (
     "This failure happened before PyTorch and ComfyUI were loaded, so your workflow and models are not the cause of this specific failure."
@@ -533,12 +553,30 @@ host_note = (
     "The preflight stopped ComfyUI early to avoid a misleading crash later in the workflow."
 )
 
+if driver_cuda != "unknown":
+    version_note = (
+        f"This image contains CUDA {container_cuda}. The NVIDIA driver reports CUDA {driver_cuda} support through nvidia-smi. "
+        "The driver-reported value is the maximum CUDA compatibility exposed by the host driver; it is not proof that a CUDA toolkit of that version is installed on the host. "
+        "A newer supported minor version does not by itself mean the container is incompatible."
+    )
+else:
+    version_note = (
+        f"This image contains CUDA {container_cuda}. The host driver CUDA support value could not be parsed from nvidia-smi on this Pod."
+    )
+
+filter_version = ""
+m = re.match(r"^(\d+)\.(\d+)", container_cuda)
+if m:
+    filter_version = f"{m.group(1)}.{m.group(2)}"
+
 cards = [
     ("Pod ID", pod_id),
     ("GPU", gpu),
     ("GPU UUID", gpu_uuid),
-    ("Driver", driver),
-    ("CUDA toolkit", cuda_version),
+    ("NVIDIA Driver", driver),
+    ("Container CUDA", container_cuda),
+    ("Driver CUDA support", driver_cuda),
+    ("cuInit", cuinit_display),
     ("Failure code", str(failure_code)),
 ]
 
@@ -546,6 +584,13 @@ card_html = "".join(
     f'<div class="card"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
     for label, value in cards
 )
+
+filter_hint_html = ""
+if failure_code == 43 and filter_version:
+    filter_hint_html = (
+        f'<li>While troubleshooting, prefer the RunPod <strong>CUDA Versions</strong> filter set to '
+        f'<code>{html.escape(filter_version)}</code> to match this image and reduce host variability.</li>'
+    )
 
 page = f'''<!doctype html>
 <html lang="en">
@@ -563,7 +608,7 @@ page = f'''<!doctype html>
       background: radial-gradient(circle at top, #1d2945 0, #0b1020 42%, #070a12 100%);
       color: #eef2ff;
     }}
-    main {{ max-width: 1040px; margin: 0 auto; padding: 52px 24px 72px; }}
+    main {{ max-width: 1180px; margin: 0 auto; padding: 52px 24px 72px; }}
     .hero {{
       background: rgba(16, 23, 42, .86);
       border: 1px solid rgba(148, 163, 184, .22);
@@ -585,9 +630,9 @@ page = f'''<!doctype html>
       letter-spacing: .02em;
     }}
     h1 {{ margin: 18px 0 10px; font-size: clamp(30px, 5vw, 48px); line-height: 1.06; }}
-    .lead {{ margin: 0; color: #cbd5e1; font-size: 18px; line-height: 1.65; max-width: 850px; }}
+    .lead {{ margin: 0; color: #cbd5e1; font-size: 18px; line-height: 1.65; max-width: 900px; }}
     .category {{ margin-top: 18px; color: #93c5fd; font-weight: 700; }}
-    .grid {{ display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin-top: 26px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-top: 26px; }}
     .card {{ background: rgba(15,23,42,.7); border: 1px solid rgba(148,163,184,.18); border-radius: 14px; padding: 15px; min-width: 0; }}
     .card span {{ display:block; color:#94a3b8; font-size:12px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:7px; }}
     .card strong {{ display:block; color:#f8fafc; font-size:14px; word-break:break-word; }}
@@ -595,13 +640,15 @@ page = f'''<!doctype html>
     .section h2 {{ margin:0 0 10px; font-size:18px; }}
     .section p {{ color:#cbd5e1; line-height:1.65; margin:7px 0; }}
     .action {{ border-color: rgba(96,165,250,.35); background: rgba(30,64,175,.12); }}
+    .context {{ border-color: rgba(167,139,250,.28); background: rgba(76,29,149,.10); }}
     ol {{ color:#dbeafe; line-height:1.75; padding-left:22px; }}
     code {{ background:#111827; border:1px solid #334155; border-radius:6px; padding:2px 6px; }}
     details {{ margin-top:18px; background:rgba(2,6,23,.82); border:1px solid rgba(148,163,184,.17); border-radius:16px; overflow:hidden; }}
     summary {{ cursor:pointer; padding:17px 20px; font-weight:700; color:#cbd5e1; }}
     pre {{ margin:0; padding:20px; overflow:auto; border-top:1px solid rgba(148,163,184,.13); color:#cbd5e1; background:#050812; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
     .footer {{ margin-top:18px; color:#64748b; font-size:13px; text-align:center; }}
-    @media (max-width: 760px) {{ .grid {{ grid-template-columns: 1fr; }} .hero {{ padding:24px; }} main {{ padding:28px 14px 48px; }} }}
+    @media (max-width: 920px) {{ .grid {{ grid-template-columns: repeat(2, minmax(0,1fr)); }} }}
+    @media (max-width: 600px) {{ .grid {{ grid-template-columns: 1fr; }} .hero {{ padding:24px; }} main {{ padding:28px 14px 48px; }} }}
   </style>
 </head>
 <body>
@@ -620,8 +667,14 @@ page = f'''<!doctype html>
     <ol>
       <li>Keep this Pod only if you need the diagnostics; SSH, JupyterLab and FileBrowser remain available.</li>
       <li>For a <code>cuInit()</code> / driver failure, terminate the Pod and deploy another GPU host.</li>
-      <li>If the problem repeats, send the Pod ID, GPU UUID, NVIDIA driver version and <code>CUDA_PREFLIGHT.txt</code> to the infrastructure provider.</li>
+      {filter_hint_html}
+      <li>If the problem repeats, send the Pod ID, GPU UUID, NVIDIA driver version, Container CUDA, Driver CUDA support and <code>CUDA_PREFLIGHT.txt</code> to the infrastructure provider.</li>
     </ol>
+  </section>
+
+  <section class="section context">
+    <h2>CUDA version context</h2>
+    <p>{html.escape(version_note)}</p>
   </section>
 
   <section class="section">
@@ -694,7 +747,8 @@ handle_cuda_preflight() {
         echo ""
         if [ "$status" = "43" ]; then
             echo "  Recommended action: terminate this Pod and deploy another GPU/host."
-            echo "  If it repeats, report the Pod ID, GPU UUID and driver version shown above."
+            echo "  While troubleshooting, prefer a RunPod CUDA Version filter matching the image CUDA version."
+            echo "  If it repeats, report the Pod ID, GPU UUID, driver, Container CUDA and Driver CUDA support shown above."
         else
             echo "  Recommended action: review the diagnostics above before changing the ComfyUI workflow."
         fi
