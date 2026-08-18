@@ -281,6 +281,15 @@ RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/
     rm -f /etc/ssh/ssh_host_*
 
 # ---------------------------------------------------------------------------
+# Direct TCP backup for ComfyUI
+# ---------------------------------------------------------------------------
+
+RUN mkdir -p /opt/inteliweb
+COPY scripts/comfyui-tcp-forward.py /opt/inteliweb/comfyui-tcp-forward.py
+COPY scripts/entrypoint-with-tcp-backup.sh /entrypoint-with-tcp-backup.sh
+RUN chmod +x /entrypoint-with-tcp-backup.sh /opt/inteliweb/comfyui-tcp-forward.py
+
+# ---------------------------------------------------------------------------
 # Workspace
 # ---------------------------------------------------------------------------
 
@@ -288,11 +297,12 @@ RUN mkdir -p /workspace
 
 WORKDIR /workspace
 
-EXPOSE 8188 22 8888 8080
+# 8188 = normal RunPod HTTP proxy, 8189 = Direct TCP backup forward to 8188.
+EXPOSE 8188 8189 22 8888 8080
 
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 SHELL ["/bin/bash", "--login", "-c"]
 
-ENTRYPOINT ["/start.sh"]
+ENTRYPOINT ["/entrypoint-with-tcp-backup.sh"]
