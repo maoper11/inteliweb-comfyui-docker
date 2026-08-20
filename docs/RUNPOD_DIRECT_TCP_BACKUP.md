@@ -15,6 +15,26 @@ ERR_HTTP2_SERVER_REFUSED_STREAM
 Failed to fetch dynamically imported module
 ```
 
+## Reliable uploads, downloads and WebSockets
+
+The Direct TCP backup is implemented as a transparent asyncio TCP proxy with flow control (`writer.drain()`) in both directions.
+
+That means the backup path does not reinterpret or modify ComfyUI traffic. It can carry:
+
+```text
+Normal HTTP requests
+Workflow save/load requests
+Load Image uploads
+Large multipart uploads
+Downloads
+ComfyUI WebSocket traffic
+Prompt queue updates and previews
+```
+
+Flow control is important for large transfers. If the receiver becomes temporarily slower than the sender, the proxy waits for available socket-buffer capacity instead of dropping the connection. No idle timeout is applied, so long-lived ComfyUI WebSockets can remain connected.
+
+The default forwarding chunk size is `262144` bytes (256 KiB) and can be overridden with `COMFYUI_TCP_CHUNK_SIZE` if needed.
+
 ## Recommended RunPod template ports
 
 Configure the template as follows:
@@ -88,6 +108,8 @@ Optional advanced settings:
 COMFYUI_TCP_BACKUP_PORT=8189
 COMFYUI_TCP_TARGET_PORT=8188
 COMFYUI_TCP_TARGET_HOST=127.0.0.1
+COMFYUI_TCP_CONNECT_TIMEOUT=10
+COMFYUI_TCP_CHUNK_SIZE=262144
 ```
 
 If the backup internal port is changed, the RunPod TCP port configuration must be changed to match it.
